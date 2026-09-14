@@ -1,6 +1,7 @@
 package com.user.clionluogu.api
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /** 题目耗时/内存限制。time 为毫秒数组，memory 为 KB 数组。 */
 @Serializable
@@ -28,6 +29,8 @@ data class LuoguProblemDto(
     val flag: Int? = null,
     val showScore: Boolean = false,
     val acceptSolution: Boolean = false,
+    val content: JsonObject? = null,
+    val contenu: JsonObject? = null,
 )
 
 /** 顶级信封，承载 data.problem 与 status 等。 */

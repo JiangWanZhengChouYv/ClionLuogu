@@ -9,10 +9,12 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.vfs.VirtualFile
 import com.user.clionluogu.api.LuoguApiException
 import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.service.ProblemFileGenService
+import com.user.clionluogu.service.ProblemMdGenService
 import kotlinx.coroutines.runBlocking
 
 /** 拉取洛谷题目并生成本地 .cpp / .in / .out 测试文件。 */
@@ -47,11 +49,37 @@ class FetchProblemAction : AnAction() {
 
             // 4. 回 EDT 生成文件并自动打开 cpp
             ApplicationManager.getApplication().invokeLater {
-                val result = ProblemFileGenService.generate(project, pid, problem)
-                result.cpp?.let { FileEditorManager.getInstance(project).openFile(it, true) }
-                if (result.notices.isNotEmpty()) {
-                    notify(project, NotificationType.INFORMATION, result.notices.joinToString("\n"))
+                // 4.1 生成题目描述 md（写入根目录 Pxxxx.md；失败不中断后续逻辑）
+                var mdFile: VirtualFile? = null
+                var mdSignal = ""
+                try {
+                    val mdText = ProblemMdGenService.buildMarkdown(problem)
+                    mdFile = ProblemMdGenService.write(project, pid, mdText)
+                    if (mdFile != null) mdSignal = "已在根目录生成 $pid.md"
+                } catch (_: Throwable) {
+                    mdFile = null
                 }
+
+                // 4.2 生成 .cpp + 全部样例文件夹
+                val result = ProblemFileGenService.generate(project, pid, problem)
+
+                // 4.3 组装完成通知
+                val lines = mutableListOf<String>()
+                if (mdFile != null) lines.add(mdSignal)
+                if (result.sampleCount > 0 && !result.samplesDirPath.isNullOrBlank()) {
+                    lines.add("样例 ${result.sampleCount} 组，位于 ${result.samplesDirPath}")
+                } else if (result.sampleCount == 0) {
+                    lines.add("该题无样例")
+                }
+                if (result.notices.isNotEmpty()) {
+                    lines.addAll(result.notices)
+                }
+                if (lines.isNotEmpty()) {
+                    notify(project, NotificationType.INFORMATION, lines.joinToString("\n"))
+                }
+
+                // 4.4 自动打开 cpp
+                result.cpp?.let { FileEditorManager.getInstance(project).openFile(it, true) }
             }
         }
     }
