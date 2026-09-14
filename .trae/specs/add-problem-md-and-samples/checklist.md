@@ -33,7 +33,7 @@
 - [x] `./gradlew compileKotlin` 通过（Task1/3/4 相关改动无编译错误）
 - [x] `./gradlew buildPlugin -x buildSearchableOptions` 通过
 - [ ] P1001 实测：`P1001.md` + `P1001_samples/P1001_1.in/.out` + 根目录 `P1001.cpp` 齐备（需 runIde 落盘验证）
-- [ ] 无测试残留、改动已本地 commit（未擅自 push）
+- [x] 无测试残留、改动已本地 commit（未擅自 push）（commit 77b46f0）
 
 ## 本机 GUI 验证（runIde，无法自动）
 

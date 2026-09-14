@@ -29,9 +29,9 @@
   - [x] SubTask 5.2: 构造多组样例题在线核对文件命名与内容一致；无样例/无正文分支核对提示
   - [ ] SubTask 5.3: `runIde` 本机验证（用户操作）：输入 P1001 后确认 md + 样例文件夹生成、cpp 自动打开、通知正确
 
-- [ ] Task 6: 收尾与交付
-  - [ ] SubTask 6.1: 如本 spec 期间修改样例输出位置，检查 `.gitignore` 无需变更；确认无测试残留
-  - [ ] SubTask 6.2: 本地 commit（先加暂存相关源码文件），不 push（除非用户要求）——沿用现有 origin/main
+- [x] Task 6: 收尾与交付
+  - [x] SubTask 6.1: 如本 spec 期间修改样例输出位置，检查 `.gitignore` 无需变更；确认无测试残留
+  - [x] SubTask 6.2: 本地 commit（先加暂存相关源码文件），不 push（除非用户要求）——沿用现有 origin/main（commit 77b46f0）
 
 # Task Dependencies
 
