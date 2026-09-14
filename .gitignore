@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Gradle
+.gradle
+build
+build/
+*.iml
+local.properties
+!gradle/wrapper/gradle-wrapper.jar
+
+# IntelliJ / K2 (Kotlin)
+.idea
+.intellijPlatform
+.kotlin
+out/
+.settings
+*.ipr
+*.iws

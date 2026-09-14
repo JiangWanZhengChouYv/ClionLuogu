@@ -1,0 +1,25 @@
+<idea-plugin>
+    <id>com.user.clionluogu</id>
+    <name>ClionLuogu</name>
+    <vendor>user</vendor>
+    <description><![CDATA[从洛谷拉取题目并生成本地测试文件。]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationService service="com.user.clionluogu.settings.LuoguSettings"/>
+        <applicationConfigurable parentId="tools" instance="com.user.clionluogu.settings.LuoguConfigurable"/>
+        <notificationGroup id="ClionLuogu.Notifications" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <group id="com.user.clionluogu.Menu" text="洛谷" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="com.user.clionluogu.FetchProblem" class="com.user.clionluogu.action.FetchProblemAction"
+                    text="拉取洛谷题目" description="拉取题目并生成本地测试文件">
+                <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+                <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            </action>
+        </group>
+    </actions>
+</idea-plugin>
