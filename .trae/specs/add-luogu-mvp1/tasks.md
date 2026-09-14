@@ -42,11 +42,11 @@
   - [ ] SubTask 7.3: 验证保护逻辑（修改 `P1001.cpp` 后重新拉题，代码不被覆盖）与失败提示（输入不存在的题号）
   - [ ] SubTask 7.4: 验证设置页模板修改后生效，且拉题过程中 IDE 界面不冻结
 
-- [ ] Task 8: 清理原型并初始化 Git 仓库
-  - [ ] SubTask 8.1: 删除 `prototype/` 目录（临时验证代码，不进入版本库）
-  - [ ] SubTask 8.2: 编写 `.gitignore`（`build/`、`.gradle/`、`.idea/`、`*.iml`、`local.properties` 等）
-  - [ ] SubTask 8.3: `git init` + 首次提交，确认 `git status` 干净且提交中不含 `prototype/`
-  - [ ] SubTask 8.4: 添加远端 `origin` 并推送 `main`（远端不存在时向用户索取仓库地址，不擅自创建）
+- [x] Task 8: 清理原型并初始化 Git 仓库
+  - [x] SubTask 8.1: 删除 `prototype/` 目录（临时验证代码，不进入版本库）
+  - [x] SubTask 8.2: 编写 `.gitignore`（`build/`、`.gradle/`、`.idea/`、`*.iml`、`local.properties` 等）
+  - [x] SubTask 8.3: `git init` + 首次提交，确认 `git status` 干净且提交中不含 `prototype/`
+  - [x] SubTask 8.4: 添加远端 `origin` 并推送 `main`（已建私有仓库 JiangWanZhengChouYv/ClionLuogu，经本地代理推送成功）
 
 # Task Dependencies
 
