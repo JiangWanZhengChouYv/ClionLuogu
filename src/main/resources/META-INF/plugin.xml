@@ -9,6 +9,9 @@
     <extensions defaultExtensionNs="com.intellij">
         <applicationConfigurable parentId="tools" instance="com.user.clionluogu.settings.LuoguConfigurable"/>
         <notificationGroup id="ClionLuogu.Notifications" displayType="BALLOON"/>
+        <toolWindow id="ClionLuogu" anchor="right"
+                    icon="AllIcons.Toolwindows.ToolWindowConsole"
+                    factoryClass="com.user.clionluogu.ui.LuoguToolWindowFactory"/>
     </extensions>
 
     <actions>
@@ -16,6 +19,16 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action id="com.user.clionluogu.FetchProblem" class="com.user.clionluogu.action.FetchProblemAction"
                     text="拉取洛谷题目" description="拉取题目并生成本地测试文件">
+                <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+                <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            </action>
+            <action id="com.user.clionluogu.Login" class="com.user.clionluogu.action.LoginAction"
+                    text="登录洛谷（粘贴 Cookie）" description="粘贴 Cookie 登录洛谷">
+                <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+                <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            </action>
+            <action id="com.user.clionluogu.SubmitCode" class="com.user.clionluogu.action.SubmitCodeAction"
+                    text="提交代码到洛谷" description="提交当前 C++ 代码到洛谷">
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
                 <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             </action>
