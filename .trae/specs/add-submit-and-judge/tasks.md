@@ -34,11 +34,11 @@
   - [x] SubTask 5.5: 验证 `./gradlew buildPlugin -x buildSearchableOptions` 通过
   - [x] SubTask 5.6: 补提交联动：SubmitCodeAction 提交成功后调 `LuoguToolWindow.INSTANCE.trackSubmission(pid, rid)` 启动轮询并实时更新窗口
 
-- [ ] Task 6: 端到端验证
-  - [ ] SubTask 6.1: 复核 code 安全：无明文 cookie 写入仓库/磁盘（grep 检查 `PasswordSafe` 用法与无 `cookie.*=.*写文件` 路径）
-  - [ ] SubTask 6.2: 编译与打包全通过；确认 login/submit/judge/tool-window 类都在产物 jar
+- [x] Task 6: 端到端验证
+  - [x] SubTask 6.1: 复核 code 安全：无明文 cookie 写入仓库/磁盘（grep 检查 `PasswordSafe` 用法与无 `cookie.*=.*写文件` 路径）
+  - [x] SubTask 6.2: 编译与打包全通过；确认 login/submit/judge/tool-window 类都在产物 jar
   - [ ] SubTask 6.3: runIde 本机验证（用户操作，评估：粘贴 cookie → 登录 → 提交 → 工具窗口看结果），不在无头自动跑
-  - [ ] SubTask 6.4: 完成后本地 commit（不 push，除非用户要求）
+  - [x] SubTask 6.4: 完成后本地 commit（不 push，除非用户要求）（commit bedfbe8）
 
 # Task Dependencies
 

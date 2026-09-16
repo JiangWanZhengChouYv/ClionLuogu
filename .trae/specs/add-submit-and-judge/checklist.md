@@ -41,5 +41,5 @@
 - [x] `./gradlew compileKotlin` / `buildPlugin -x buildSearchableOptions` 全部通过
 - [x] login/submit/judge/tool-window 类均存在于产物 jar
 - [x] 无明文 cookie 落盘、无测试残留
-- [ ] 改动已本地 commit（未擅自 push）
+- [x] 改动已本地 commit（未擅自 push）（commit bedfbe8）
 - [ ] runIde 本机评估：粘贴 cookie → 登录 → 提交 → 工具窗口看结果（无法自动，需用户）
