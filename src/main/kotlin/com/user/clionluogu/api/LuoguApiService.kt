@@ -1,5 +1,6 @@
 package com.user.clionluogu.api
 
+import com.user.clionluogu.storage.SecureCookieStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -7,8 +8,10 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import okhttp3.FormBody
+import kotlinx.serialization.json.buildJsonObject
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
 /** 洛谷 API 业务异常，供 UI 层提示。 */
@@ -28,21 +31,29 @@ data class SubmissionStatus(
     val compileError: String? = null,            // 编译错误详情
 )
 
-/** 洛谷评测状态码 → 可读文本；不在表内时回退为「原始数字 + 中文未知」。 */
+/**
+ * 洛谷评测状态码 → 可读文本。
+ *
+ * 映射依据 vscode-luogu 的 `RecordStatus` 表（洛谷 `/record/{rid}` 返回的 `record.status`）：
+ * 0 等待、1 评测中、2 CE、3 OLE、4 MLE、5 TLE、6 WA、7 RE、11 UKE、12 AC、14 Unaccepted、
+ * 21/22/23 分别对应 Hack 成功/失败/跳过，-1 为未显示。不在表内时回退为「原始数字」。
+ */
 fun statusTextOf(code: Int?): String = when (code) {
-    0 -> "等待中 (PENDING)"
-    1 -> "评测中 (JUDGING)"
+    -1 -> "未显示 (Unshown)"
+    0 -> "等待中 (Waiting)"
+    1 -> "评测中 (Judging)"
     2 -> "编译错误 (CE)"
-    3 -> "正确 (AC)"
-    4 -> "答案错误 (WA)"
+    3 -> "输出超限 (OLE)"
+    4 -> "内存超限 (MLE)"
     5 -> "时间超限 (TLE)"
-    6 -> "内存超限 (MLE)"
+    6 -> "答案错误 (WA)"
     7 -> "运行错误 (RE)"
-    8 -> "系统错误 (SE)"
-    9 -> "HACKED"
-    10 -> "未知错误 (UKE)"
-    11 -> "输出超限 (OLE)"
-    12 -> "格式错误 (PE)"
+    11 -> "未知错误 (UKE)"
+    12 -> "通过 (AC)"
+    14 -> "未通过 (Unaccepted)"
+    21 -> "Hack 成功"
+    22 -> "Hack 失败"
+    23 -> "Hack 跳过"
     null -> "未知"
     else -> "状态码 $code（未知）"
 }
@@ -101,11 +112,19 @@ object LuoguApiService {
         }
     }
 
-    /** 从洛谷首页提取 CSRF token。首页无该标签（如未登录被重定向到登录页）时抛 [LuoguApiException]。 */
+    /**
+     * 从洛谷 `/ranking` 页面提取 CSRF token（`<meta name="csrf-token">`）。
+     *
+     * 说明：首页 `/` 会被反爬拦截（返回混淆 JS，无该 meta），故改为访问 `/ranking`
+     * （vscode-luogu 用的正是此路径；实测带登录 cookie 可稳定返回 200 + csrf-token）。
+     * 找不到该标签时抛 [LuoguApiException]。
+     */
     private fun fetchCsrfToken(): String {
         val request = Request.Builder()
-            .url("https://www.luogu.com.cn/")
+            .url("https://www.luogu.com.cn/ranking")
             .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            // 与提交使用同一份登录 cookie，确保拿到的 csrf-token 与提交会话匹配
+            .apply { loginCookieHeader()?.let { header("Cookie", it) } }
             .get()
             .build()
         val body = LuoguHttpClient.getClient().newCall(request).execute().use {
@@ -118,72 +137,75 @@ object LuoguApiService {
     }
 
     /**
-     * 校验当前登录态并返回登录用户名；未登录 / 请求失败 / 解析不出时返回 null。
-     * 请求会尽力附带 X-CSRF-Token（失败不影响校验）。
+     * 校验登录态并返回用户名；无法确认登录 / 请求失败时返回 null。
+     *
+     * 参照 vscode-luogu 的实现：先用 `/auth/login` 拿到会话（OkHttp 自动跟随重定向并携带 / 保存
+     * Cookie，含反爬 C3VK），再请求 `/api/user/search?keyword=<uid>`，从返回 JSON 的
+     * `users[0].name` 取用户名。该响应会携带 `_uid` HttpOnly cookie，是登录态有效的标志。
      */
-    suspend fun getCurrentUser(): String? = withContext(Dispatchers.IO) {
+    suspend fun getUser(uid: Int): String? = withContext(Dispatchers.IO) {
         try {
+            // 热身：访问登录页，让 CookieJar 保存反爬 C3VK 等，确保后续请求携带会话
+            LuoguHttpClient.getClient().newCall(
+                Request.Builder()
+                    .url("https://www.luogu.com.cn/auth/login")
+                    .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+                    .get()
+                    .build()
+            ).execute().use { }
+
+            // 查询用户，从响应解析用户名
             val builder = Request.Builder()
-                .url("https://www.luogu.com.cn/api/user/info")
+                .url("https://www.luogu.com.cn/api/user/search?keyword=$uid")
                 .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
                 .get()
-            runCatching { builder.header("X-CSRF-Token", fetchCsrfToken()) }
             val response = LuoguHttpClient.getClient().newCall(builder.build()).execute()
             response.use {
                 if (it.code != 200) return@withContext null
                 val body = it.body?.string() ?: return@withContext null
-                parseUserName(body)
+                parseSearchUser(body)
             }
         } catch (e: Exception) {
             null
         }
     }
 
-    /** 宽松提取 JSON 里任意层级的第一个 name 字符串字段（返回 null 表示未解析到）。 */
-    private fun parseUserName(body: String): String? {
-        val root = try {
-            json.parseToJsonElement(body)
-        } catch (_: Exception) {
-            return null
-        }
-        val stack = ArrayDeque<JsonElement>()
-        stack.add(root)
-        while (stack.isNotEmpty()) {
-            when (val el = stack.removeLast()) {
-                is JsonObject -> {
-                    el["name"]?.let {
-                        if (it is JsonPrimitive && it.isString) return it.content.trim().ifBlank { null }
-                    }
-                    stack.addAll(el.values)
-                }
-                is JsonArray -> stack.addAll(el)
-                else -> {}
-            }
-        }
-        return null
+    /** 解析 `/api/user/search` 响应，返回首个用户 name；解析不出则 null。 */
+    private fun parseSearchUser(body: String): String? = try {
+        val root = json.parseToJsonElement(body) as? JsonObject ?: return null
+        val users = root["users"] as? JsonArray ?: return null
+        val first = users.firstOrNull() as? JsonObject ?: return null
+        (first["name"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.ifBlank { null }
+    } catch (_: Exception) {
+        null
     }
 
     /**
      * C++ 版本 → 洛谷语言 id 映射表。
      *
-     * 洛谷的语言 id 来自社区逆向，可能随平台变动，仅作默认值；如提交失败或判定异常，
-     * 请在设置中逐项校准（也可按需在表内增删）。此处优先提供含/不含 O2 的变体。
+     * 洛谷的语言 id 取自 vscode-luogu 维护的真实映射；`CppLang(id, o2)` 表示语言本体的 id 与
+     * 是否开 O2（O2 不是独立的 lang id，而是提交时的 enableO2 布尔）。如平台变动可在设置校准。
      */
-    val LANGUAGE_IDS: Map<String, Int> = linkedMapOf(
-        "C++98" to 2,
-        "C++98 (O2)" to 72,
-        "C++11" to 28,
-        "C++11 (O2)" to 34,
-        "C++14" to 34,
-        "C++14 (O2)" to 72,
-        "C++17" to 76,
-        "C++17 (O2)" to 78,
-        "C++20" to 83,
-        "C++20 (O2)" to 82,
+    data class CppLang(val id: Int, val o2: Boolean)
+
+    val LANGUAGES: Map<String, CppLang> = linkedMapOf(
+        "C++98" to CppLang(3, false),
+        "C++98 (O2)" to CppLang(3, true),
+        "C++11" to CppLang(4, false),
+        "C++11 (O2)" to CppLang(4, true),
+        "C++14" to CppLang(11, false),
+        "C++14 (O2)" to CppLang(11, true),
+        "C++17" to CppLang(12, false),
+        "C++17 (O2)" to CppLang(12, true),
+        "C++20" to CppLang(27, false),
+        "C++20 (O2)" to CppLang(27, true),
+        "C++23" to CppLang(34, false),
+        "C++23 (O2)" to CppLang(34, true),
     )
 
-    /** 洛谷提交端点（表单提交）。 */
-    private const val SUBMIT_ENDPOINT = "https://www.luogu.com.cn/submit"
+    /** 洛谷提交端点（按题目 pid，POST JSON）。 */
+    private fun submitEndpoint(pid: String): String =
+        "https://www.luogu.com.cn/fe/api/problem/submit/$pid"
 
     /** 匹配回跳地址里的评测记录 id，如 /record/123456。 */
     private val RECORD_ID_REGEX = Regex("""/?record/(\d+)""")
@@ -191,49 +213,134 @@ object LuoguApiService {
     /**
      * 提交代码到洛谷。
      *
-     * 无登录 cookie（或 CSRF 获取失败）时抛出可读 [LuoguApiException]；成功返回评测记录 id。
-     * 请求体为 application/x-www-form-urlencoded（pid/lid/code/csrf_token），
-     * 并附带 X-CSRF-Token、Referer、Origin、X-Requested-With 等浏览器伪装头。
+     * 遇服务器要求图形验证码（errorMessage=验证码错误）时，若提供了 [captchaPrompter]，
+     * 会自动下载验证码图片交给回调（可空返回表示用户取消），再用验证码重新提交，
+     * 最多重试 [maxCaptchaRetries] 次。成功返回评测记录 id。
+     *
+     * @param captchaPrompter 接收验证码 PNG 字节，返回用户输入的验证码；返回 null 表示取消。
      */
-    suspend fun submitCode(pid: String, languageId: Int, code: String): String = withContext(Dispatchers.IO) {
-        val csrf = try {
-            fetchCsrfToken()
-        } catch (e: LuoguApiException) {
-            throw LuoguApiException("未登录或 CSRF 获取失败：${e.message}", e)
-        }
-
-        val form = FormBody.Builder()
-            .add("pid", pid)
-            .add("lid", languageId.toString())
-            .add("code", code)
-            .add("csrf_token", csrf)
-            .build()
-
-        val request = Request.Builder()
-            .url(SUBMIT_ENDPOINT)
-            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
-            .header("X-CSRF-Token", csrf)
-            .header("X-Requested-With", "XMLHttpRequest")
-            .header("Origin", "https://www.luogu.com.cn")
-            .header("Referer", "https://www.luogu.com.cn/problem/$pid")
-            .post(form)
-            .build()
-
-        val response = try {
-            LuoguHttpClient.getClient().newCall(request).execute()
-        } catch (e: Exception) {
-            throw LuoguApiException("提交请求异常：${e.message}", e)
-        }
-        response.use {
-            val body = it.body?.string() ?: ""
-            if (it.isSuccessful) {
-                val rid = extractRid(it, body)
-                    ?: throw LuoguApiException("提交成功但未能解析评测记录 id")
-                return@withContext rid
+    suspend fun submitCode(
+        pid: String,
+        lang: CppLang,
+        code: String,
+        captchaPrompter: (suspend (ByteArray) -> String?)? = null,
+        maxCaptchaRetries: Int = 3,
+    ): String = withContext(Dispatchers.IO) {
+        var captcha: String? = null
+        repeat(maxCaptchaRetries + 1) {
+            val csrf = try {
+                fetchCsrfToken()
+            } catch (e: LuoguApiException) {
+                throw LuoguApiException("未登录或 CSRF 获取失败：${e.message}", e)
             }
-            // 401/403/500 等：未登录或校验被拦截
-            throw LuoguApiException("提交失败：HTTP ${it.code}（未登录或需刷新 Cookie）")
+
+            // 与 vscode-luogu 一致的 JSON 请求体：{ code, lang, enableO2, captcha? }
+            val payload = buildJsonObject {
+                put("code", JsonPrimitive(code))
+                put("lang", JsonPrimitive(lang.id))
+                put("enableO2", JsonPrimitive(lang.o2))
+                if (!captcha.isNullOrBlank()) put("captcha", JsonPrimitive(captcha))
+            }
+
+            val request = Request.Builder()
+                .url(submitEndpoint(pid))
+                .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+                .header("X-CSRF-Token", csrf)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Origin", "https://www.luogu.com.cn")
+                .header("Referer", "https://www.luogu.com.cn/")
+                .header("Content-Type", "application/json")
+                // 手动带上登录 cookie（与 vscode-luogu 一致：_uid=<uid>; __client_id=<clientID>），
+                // 避免依赖 CookieJar 匹配失败导致被当作未登录。
+                .apply { loginCookieHeader()?.let { header("Cookie", it) } }
+                .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val response = try {
+                LuoguHttpClient.getClient().newCall(request).execute()
+            } catch (e: Exception) {
+                throw LuoguApiException("提交请求异常：${e.message}", e)
+            }
+            response.use {
+                val body = it.body?.string() ?: ""
+                if (it.isSuccessful) {
+                    val rid = extractRid(it, body)
+                        ?: throw LuoguApiException("提交成功但未能解析评测记录 id")
+                    return@withContext rid
+                }
+                // 服务器要求图形验证码：下载图片交给回调，获取到输入后重新提交
+                val errMsgForCaptcha = extractErrorMessage(body) // 已对 unicode 转义解码
+                if (it.code == 403 && errMsgForCaptcha.contains("验证码错误")) {
+                    val prompter = captchaPrompter ?: throw LuoguApiException("提交失败：需要输入图形验证码")
+                    val image = try {
+                        fetchCaptchaImage()
+                    } catch (ie: Exception) {
+                        throw LuoguApiException("验证码图片获取失败：${ie.message}", ie)
+                    }
+                    val input = prompter(image)
+                    if (input.isNullOrBlank()) throw LuoguApiException("已取消提交（验证码未输入）")
+                    captcha = input.trim()
+                    return@repeat // 继续下一次循环，用新验证码重试
+                }
+                // 403 等：提取响应体错误信息 + set-cookie 里服务端回写的 _uid/__client_id 便于诊断
+                val errMsg = extractErrorMessage(body)
+                val cookieHint = responseCookiesHint(it)
+                throw LuoguApiException(
+                    "提交失败：HTTP ${it.code}$errMsg$cookieHint（未登录或需刷新 Cookie）"
+                )
+            }
         }
+        throw LuoguApiException("提交失败：多次验证码重试仍未成功")
+    }
+
+    /**
+     * 下载洛谷的图形验证码 PNG 图片（与 vscode-luogu 一致：GET /api/verify/captcha）。
+     * 需携带登录 cookie 以拿到与当前会话匹配的验证码。
+     */
+    private fun fetchCaptchaImage(): ByteArray {
+        val request = Request.Builder()
+            .url("https://www.luogu.com.cn/api/verify/captcha")
+            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            .apply { loginCookieHeader()?.let { header("Cookie", it) } }
+            .get()
+            .build()
+        val bytes = LuoguHttpClient.getClient().newCall(request).execute().use {
+            if (!it.isSuccessful) throw LuoguApiException("HTTP ${it.code}")
+            it.body?.bytes() ?: throw LuoguApiException("空响应")
+        }
+        if (bytes.isEmpty()) throw LuoguApiException("空响应")
+        return bytes
+    }
+
+    /** 从提交失败响应体里提取 errorMessage，用于诊断。 */
+    private fun extractErrorMessage(body: String): String {
+        if (body.isBlank()) return ""
+        val root = (try { json.parseToJsonElement(body) } catch (_: Exception) { return "" }) as? JsonObject ?: return ""
+        val msg = root["errorMessage"]?.takeIf { it is JsonPrimitive }?.let { (it as JsonPrimitive).content }
+        return if (msg.isNullOrBlank()) "" else "，服务器返回：$msg"
+    }
+
+    /** 从失败响应头提取服务端回写的 _uid / __client_id（登录态被重置的风向标）。 */
+    private fun responseCookiesHint(response: Response): String {
+        val hints = mutableListOf<String>()
+        response.headers.values("Set-Cookie").forEach { raw ->
+            if (raw.startsWith("_uid=")) hints.add("uid=${raw.removePrefix("_uid=").takeWhile { it.isDigit() }}")
+            else if (raw.startsWith("__client_id=")) hints.add("cookie 已刷新")
+        }
+        return if (hints.isEmpty()) "" else "，服务端回写${hints.joinToString("/")}"
+    }
+
+    /**
+     * 从安全存储读取登录 cookie，拼成 `_uid=<uid>; __client_id=<clientID>` 请求头。
+     * 取不到（未登录 / uid 非数字）时返回 null。
+     */
+    private fun loginCookieHeader(): String? {
+        val cookies = SecureCookieStore.load()
+        val clientId = cookies["__client_id"].orEmpty()
+        val uid = cookies["_uid"].orEmpty()
+        if (clientId.isBlank() || uid.isBlank()) return null
+        if (uid.toIntOrNull() == null) return null
+        return "_uid=$uid;__client_id=$clientId"
     }
 
     /** 从响应头 Location / JSON 的 rid / 回跳地址中提取评测记录 id。 */

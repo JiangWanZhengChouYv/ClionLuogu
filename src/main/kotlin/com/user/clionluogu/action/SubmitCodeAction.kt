@@ -17,6 +17,10 @@ import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.storage.SecureCookieStore
 import kotlinx.coroutines.runBlocking
+import java.awt.Image
+import javax.imageio.ImageIO
+import javax.swing.Icon
+import javax.swing.ImageIcon
 
 /** 提交当前编辑器里的 C++ 代码到洛谷。 */
 class SubmitCodeAction : AnAction() {
@@ -60,7 +64,7 @@ class SubmitCodeAction : AnAction() {
         }
 
         // 4. 选择语言版本
-        val langs = LuoguApiService.LANGUAGE_IDS
+        val langs = LuoguApiService.LANGUAGES
         val defaultKey = "C++17 (O2)"
         val keys = langs.keys.toTypedArray()
         if (defaultKey !in langs) { // 表被改掉时回退到首个可用项
@@ -77,7 +81,7 @@ class SubmitCodeAction : AnAction() {
         project: Project,
         pid: String,
         code: String,
-        langs: Map<String, Int>,
+        langs: Map<String, LuoguApiService.CppLang>,
         initial: String,
         keys: Array<String>,
     ) {
@@ -89,7 +93,7 @@ class SubmitCodeAction : AnAction() {
             initial,
             null,
         ) ?: return
-        val languageId = langs[chosen.trim()] ?: run {
+        val lang = langs[chosen.trim()] ?: run {
             notify(project, NotificationType.ERROR, "未知语言版本：$chosen")
             return
         }
@@ -97,7 +101,7 @@ class SubmitCodeAction : AnAction() {
         // 5. 后台提交（网络绝不在 EDT），通知回 EDT
         ApplicationManager.getApplication().executeOnPooledThread {
             val rid = try {
-                runBlocking { LuoguApiService.submitCode(pid, languageId, code) }
+                runBlocking { LuoguApiService.submitCode(pid, lang, code, captchaPrompter = { promptCaptcha(project, it) }) }
             } catch (t: Throwable) {
                 notify(project, NotificationType.ERROR, readableMessage(t))
                 return@executeOnPooledThread
@@ -108,6 +112,34 @@ class SubmitCodeAction : AnAction() {
                 com.user.clionluogu.ui.LuoguToolWindow.INSTANCE?.trackSubmission(pid, rid)
             }
         }
+    }
+
+    /**
+     * 在 EDT 上展示验证码图片并让用户输入；线程内阻塞等待用户输入。
+     * 返回 null 表示用户取消。Swing 操作必须在 EDT 进行，故用 invokeAndWait 切回主线程。
+     */
+    private fun promptCaptcha(project: Project, png: ByteArray): String? {
+        // 非 EDT 则切到 EDT 并以阻塞方式等待结果
+        val app = ApplicationManager.getApplication()
+        var result: String? = null
+        if (!app.isDispatchThread) {
+            app.invokeAndWait { result = showCaptchaDialog(project, png) }
+        } else {
+            result = showCaptchaDialog(project, png)
+        }
+        return result
+    }
+
+    private fun showCaptchaDialog(project: Project, png: ByteArray): String? {
+        val image: Image = ImageIO.read(png.inputStream()) ?: return null
+        val icon: Icon = ImageIcon(image)
+        return Messages.showInputDialog(
+            "请识别并输入下方验证码（提交需要）:",
+            "洛谷验证码",
+            icon,
+            "",
+            null,
+        )?.takeIf { it.isNotBlank() }
     }
 
     /** 将底层异常映射为可读提示。 */

@@ -36,8 +36,11 @@ object JudgePollingService {
     /** 单次失败连续重试上限，超过则视为失败终止。 */
     private const val MAX_CONSECUTIVE_FAILURES = 5
 
-    /** 终态状态码（已出评测结果，不再变化）：CE/AC/WA/TLE/MLE/RE/SE/HACKED/UKE/OLE/PE 等。 */
-    private val TERMINAL_CODES = setOf(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+    /**
+     * 终态状态码（已出评测结果，不再变化）。依据 vscode-luogu 的 `RecordStatus`：
+     * 除 0（Waiting）/1（Judging）外的已知码均为终态，含 CE/OLE/MLE/TLE/WA/RE/UKE/AC/Unaccepted/Hack 与 -1。
+     */
+    private val TERMINAL_CODES = setOf(-1, 2, 3, 4, 5, 6, 7, 11, 12, 14, 21, 22, 23)
 
     @Volatile
     private var currentJob: Job? = null

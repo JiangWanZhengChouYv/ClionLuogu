@@ -74,14 +74,18 @@ object LuoguHttpClient {
     /**
      * 把键值对 cookie 注入 target 条目（保留既有响应 cookie，如 C3VK 等）。
      * 主要用于注入登录凭证 __client_id / _uid。
+     *
+     * 会过滤掉 name/value 含非 ASCII 或 `=`/`;`/空格等非法字符的项——这些 Cookie 会造成
+     * [Cookie.Builder.build] 抛异常（如 `Unexpected char 0x… in Cookie value`），
+     * 从而让拉题/提交被误报为「网络请求异常」。只注入合法 ASCII 的凭证 cookie。
      */
     fun injectCookies(cookies: Map<String, String>) {
         if (cookies.isEmpty()) return
         injectedFromStore = true
         val list = cookieStore.computeIfAbsent(COOKIE_HOST) { mutableListOf() }
         cookies.forEach { (name, value) ->
-            if (name.isNotBlank() && value.isNotBlank()) {
-                list.add(
+            if (isUsableCookie(name) && isUsableCookie(value)) {
+                runCatching {
                     Cookie.Builder()
                         .name(name)
                         .value(value)
@@ -89,9 +93,16 @@ object LuoguHttpClient {
                         .path("/")
                         .httpOnly()
                         .build()
-                )
+                }.onSuccess { list.add(it) }
+                // onFailure 静默跳过非法 cookie
             }
         }
+    }
+
+    /** cookie 的 name / value 是否为 OkHttp 可用（仅 ASCII 且不含分隔/空白字符）。 */
+    private fun isUsableCookie(raw: String): Boolean {
+        if (raw.isBlank()) return false
+        return raw.all { it.code in 0x21..0x7E }  // 打印 ASCII，不含空格/控制/非 ASCII
     }
 
     /** 清空内存 CookieJar。 */

@@ -10,7 +10,6 @@
         <applicationConfigurable parentId="tools" instance="com.user.clionluogu.settings.LuoguConfigurable"/>
         <notificationGroup id="ClionLuogu.Notifications" displayType="BALLOON"/>
         <toolWindow id="ClionLuogu" anchor="right"
-                    icon="AllIcons.Toolwindows.ToolWindowConsole"
                     factoryClass="com.user.clionluogu.ui.LuoguToolWindowFactory"/>
     </extensions>
 
