@@ -34,7 +34,7 @@ intellijPlatform {
     pluginConfiguration {
         id = "com.user.clionluogu"
         name = "ClionLuogu"
-        version = "1.0.0"
+        version = project.version.toString()
         vendor { name = "user" }
     }
 }
