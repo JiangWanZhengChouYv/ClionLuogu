@@ -1,8 +1,25 @@
 <idea-plugin>
     <id>com.user.clionluogu</id>
     <name>ClionLuogu</name>
-    <vendor>user</vendor>
-    <description><![CDATA[从洛谷拉取题目并生成本地测试文件。]]></description>
+    <vendor url="https://github.com/JiangWanZhengChouYv">JiangWanZhengChouYv</vendor>
+    <description><![CDATA[
+在 CLion 里一站式刷洛谷：拉题、预览、提交、看评测。<br/>
+<ul>
+  <li>拉取题目与全部样例，生成 .cpp / .md / samples</li>
+  <li>搜索题目，双击结果即可预览题面（LaTeX 公式与图片）</li>
+  <li>一键提交当前代码，自动轮询评测结果</li>
+  <li>评测详情按子任务展示逐测试点彩色方块（悬停看耗时 / 内存）</li>
+  <li>提交记录按项目持久化（含源码），可查看 / 复制当次代码</li>
+</ul>
+非官方工具：仅使用你自己的登录态，不会自动登录、不会绕过验证码。
+]]></description>
+
+    <change-notes><![CDATA[
+<ul>
+  <li><b>1.0.1</b>：更新插件描述与作者信息</li>
+  <li><b>1.0.0</b>：首个正式版——6 个页签（评测 / 拉取 / 搜索 / 预览 / 提交 / 登录）、逐测试点彩色方块、评测记录项目级持久化、题目预览（内置 MathJax 渲染公式与图片）、拉取的 .md 改为规范 Markdown</li>
+</ul>
+]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>org.intellij.plugins.markdown</depends>
@@ -18,22 +35,22 @@
         <group id="com.user.clionluogu.Menu" text="洛谷" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action id="com.user.clionluogu.SearchProblem" class="com.user.clionluogu.action.SearchProblemAction"
-                    text="搜索洛谷题目" description="按关键词搜索题目并拉取生成测试文件">
+                    text="搜索洛谷题目" description="打开「搜索」页签，搜索题目并预览 / 拉取">
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
                 <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             </action>
             <action id="com.user.clionluogu.FetchProblem" class="com.user.clionluogu.action.FetchProblemAction"
-                    text="拉取洛谷题目" description="拉取题目并生成本地测试文件">
+                    text="拉取洛谷题目" description="打开「拉取」页签，按题号拉题并生成本地测试文件">
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
                 <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             </action>
             <action id="com.user.clionluogu.Login" class="com.user.clionluogu.action.LoginAction"
-                    text="登录洛谷（粘贴 Cookie）" description="粘贴 Cookie 登录洛谷">
+                    text="登录洛谷" description="打开「登录」页签，填写 __client_id 与 _uid">
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
                 <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             </action>
             <action id="com.user.clionluogu.SubmitCode" class="com.user.clionluogu.action.SubmitCodeAction"
-                    text="提交代码到洛谷" description="提交当前 C++ 代码到洛谷">
+                    text="提交代码到洛谷" description="打开「提交」页签，提交当前 C++ 代码">
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
                 <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             </action>

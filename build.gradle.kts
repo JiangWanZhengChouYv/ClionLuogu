@@ -38,6 +38,9 @@ intellijPlatform {
         id = "com.user.clionluogu"
         name = "ClionLuogu"
         version = project.version.toString()
-        vendor { name = "user" }
+        vendor {
+            name = "JiangWanZhengChouYv"
+            url = "https://github.com/JiangWanZhengChouYv"
+        }
     }
 }
