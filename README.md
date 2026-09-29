@@ -2,8 +2,8 @@
 
 > 在 CLion 里一站式刷洛谷：**拉题 → 预览 → 写码 → 提交 → 看评测**。
 
-[![Release](https://img.shields.io/github/v/release/JiangWanZhengChouYv/ClionLuogu)](https://github.com/JiangWanZhengChouYv/ClionLuogu/releases)
-[![License](https://img.shields.io/github/license/JiangWanZhengChouYv/ClionLuogu)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/JiangWanZhengChouYv/ClionLuogu?cacheSeconds=300)](https://github.com/JiangWanZhengChouYv/ClionLuogu/releases)
+[![License](https://img.shields.io/github/license/JiangWanZhengChouYv/ClionLuogu?cacheSeconds=3600)](LICENSE)
 ![CLion](https://img.shields.io/badge/CLion-2024.3%2B-blue)
 ![Platform](https://img.shields.io/badge/IntelliJ%20Platform-plugin-black)
 
