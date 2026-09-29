@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -42,8 +43,7 @@ object JudgePollingService {
      */
     private val TERMINAL_CODES = setOf(-1, 2, 3, 4, 5, 6, 7, 11, 12, 14, 21, 22, 23)
 
-    @Volatile
-    private var currentJob: Job? = null
+    private val jobs = ConcurrentHashMap<String, Job>()
 
     /** 是否终态。 */
     fun isTerminal(code: Int?): Boolean = code != null && code in TERMINAL_CODES
@@ -53,7 +53,7 @@ object JudgePollingService {
      * - 每次成功查询后回调 [onUpdate]；到达终态后回调 [onDone]。
      * - 连续失败达到上限回调 [onError] 并停止；[cancelAll] 或句柄 [Cancellable.cancel] 触发取消，
      *   取消时若已有可用的最近状态也会回调 [onDone]（携带最近状态，表示「中断」）。
-     * - 每次 [startPolling] 会先取消上一次仍在运行的轮询。
+     * - 同一 rid 的旧轮询会被取消；不同 rid 的轮询可并发运行。
      */
     fun startPolling(
         rid: String,
@@ -61,7 +61,7 @@ object JudgePollingService {
         onDone: (SubmissionStatus) -> Unit,
         onError: (Throwable) -> Unit,
     ): Cancellable {
-        cancelAll()
+        jobs.remove(rid)?.cancel()
 
         val finished = AtomicBoolean(false)
         val lastRef = AtomicReference<SubmissionStatus?>(null)
@@ -96,8 +96,9 @@ object JudgePollingService {
                 if (isActive) delay(POLL_INTERVAL_MS)
             }
         }
-        currentJob = job
+        jobs[rid] = job
         job.invokeOnCompletion { cause ->
+            jobs.remove(rid, job)
             // 因取消而终止（非正常终态）时，回调 onDone 携带最近一次已知状态。
             if (cause is CancellationException) lastRef.get()?.let { finish(it) }
         }
@@ -111,9 +112,9 @@ object JudgePollingService {
         }
     }
 
-    /** 取消当前正在进行的轮询。 */
+    /** 取消全部正在进行的轮询。 */
     fun cancelAll() {
-        currentJob?.cancel()
-        currentJob = null
+        jobs.values.forEach { it.cancel() }
+        jobs.clear()
     }
 }

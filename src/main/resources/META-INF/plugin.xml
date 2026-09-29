@@ -5,6 +5,7 @@
     <description><![CDATA[从洛谷拉取题目并生成本地测试文件。]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.intellij.plugins.markdown</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <applicationConfigurable parentId="tools" instance="com.user.clionluogu.settings.LuoguConfigurable"/>
@@ -16,6 +17,11 @@
     <actions>
         <group id="com.user.clionluogu.Menu" text="洛谷" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="com.user.clionluogu.SearchProblem" class="com.user.clionluogu.action.SearchProblemAction"
+                    text="搜索洛谷题目" description="按关键词搜索题目并拉取生成测试文件">
+                <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+                <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            </action>
             <action id="com.user.clionluogu.FetchProblem" class="com.user.clionluogu.action.FetchProblemAction"
                     text="拉取洛谷题目" description="拉取题目并生成本地测试文件">
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
@@ -31,6 +37,8 @@
                 <add-to-group group-id="EditorPopupMenu" anchor="last"/>
                 <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
             </action>
+            <action id="com.user.clionluogu.ClearHistory" class="com.user.clionluogu.action.ClearHistoryAction"
+                    text="清空提交记录" description="清空本地提交历史列表"/>
         </group>
     </actions>
 </idea-plugin>

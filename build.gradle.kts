@@ -12,7 +12,10 @@ repositories {
 }
 
 dependencies {
-    intellijPlatform { clion("2024.3") }
+    intellijPlatform {
+        clion("2024.3")
+        bundledPlugin("org.intellij.plugins.markdown")
+    }
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 }

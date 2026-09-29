@@ -22,7 +22,7 @@ import kotlinx.serialization.json.jsonPrimitive
 object ProblemMdGenService {
 
     /** 洛谷 difficulty 数字 → 中文等级；不在表中的难度值回退为原始数字。 */
-    private val difficultyMap = mapOf(
+    internal val difficultyMap = mapOf(
         0 to "入门",
         1 to "普及-",
         2 to "普及/提高-",
@@ -102,12 +102,61 @@ object ProblemMdGenService {
         return file
     }
 
-    /** 从正文对象读取段落，做轻量清洗；键缺失或值为空时返回 null。 */
+    /** 从正文对象读取段落，转为规范 Markdown；键缺失或值为空时返回 null。 */
     private fun JsonObject.section(key: String): String? {
         val raw = this[key]?.jsonPrimitive?.contentOrNull ?: return null
-        val cleaned = raw
-            .replace("</br>", "\n", ignoreCase = true)
-            .replace("<br>", "\n", ignoreCase = true)
-        return cleaned.ifBlank { null }
+        return htmlToMarkdown(raw).ifBlank { null }
+    }
+
+    private fun htmlToMarkdown(html: String): String {
+        var text = html
+        val ci = RegexOption.IGNORE_CASE
+        text = Regex("<br\\s*/?>", ci).replace(text, "\n")
+        text = Regex("</br>", ci).replace(text, "\n")
+        text = Regex("<p[^>]*>", ci).replace(text, "")
+        text = Regex("</p>", ci).replace(text, "\n\n")
+        text = Regex("<div[^>]*>", ci).replace(text, "\n")
+        text = Regex("</div>", ci).replace(text, "\n")
+        text = Regex("<ul[^>]*>", ci).replace(text, "\n")
+        text = Regex("</ul>", ci).replace(text, "\n")
+        text = Regex("<ol[^>]*>", ci).replace(text, "\n")
+        text = Regex("</ol>", ci).replace(text, "\n")
+        text = Regex("<li[^>]*>", ci).replace(text, "- ")
+        text = Regex("</li>", ci).replace(text, "\n")
+        text = Regex("<strong[^>]*>", ci).replace(text, "**")
+        text = Regex("<b[^>]*>", ci).replace(text, "**")
+        text = Regex("</strong>", ci).replace(text, "**")
+        text = Regex("</b>", ci).replace(text, "**")
+        text = Regex("<em[^>]*>", ci).replace(text, "*")
+        text = Regex("<i[^>]*>", ci).replace(text, "*")
+        text = Regex("</em>", ci).replace(text, "*")
+        text = Regex("</i>", ci).replace(text, "*")
+        text = Regex("<code[^>]*>", ci).replace(text, "`")
+        text = Regex("</code>", ci).replace(text, "`")
+        text = Regex("<pre[^>]*>", ci).replace(text, "\n")
+        text = Regex("</pre>", ci).replace(text, "\n")
+        text = Regex("<sub[^>]*>", ci).replace(text, "")
+        text = Regex("</sub>", ci).replace(text, "")
+        text = Regex("<sup[^>]*>", ci).replace(text, "")
+        text = Regex("</sup>", ci).replace(text, "")
+        text = Regex("<span[^>]*>", ci).replace(text, "")
+        text = Regex("</span>", ci).replace(text, "")
+        text = Regex("<[^>]+>", ci).replace(text, "")
+
+        text = text.replace("&lt;", "<")
+        text = text.replace("&gt;", ">")
+        text = text.replace("&quot;", "\"")
+        text = text.replace("&#39;", "'")
+        text = text.replace("&apos;", "'")
+        text = text.replace("&nbsp;", " ")
+        text = text.replace("&hellip;", "…")
+        text = text.replace("&le;", "≤")
+        text = text.replace("&ge;", "≥")
+        text = text.replace("&times;", "×")
+        text = text.replace("&amp;", "&")
+
+        text = Regex("\n{3,}").replace(text, "\n\n")
+        text = text.lines().joinToString("\n") { it.trimEnd() }
+        return text.trim()
     }
 }

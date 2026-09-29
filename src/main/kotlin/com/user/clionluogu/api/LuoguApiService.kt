@@ -13,6 +13,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.net.URLEncoder
 
 /** 洛谷 API 业务异常，供 UI 层提示。 */
 class LuoguApiException(msg: String, cause: Throwable? = null) : Exception(msg, cause)
@@ -28,7 +29,32 @@ data class SubmissionStatus(
     val timeMs: Long? = null,
     val memoryKb: Long? = null,
     val subtaskInfo: List<String> = emptyList(), // 各子任务/测试点得分文本
+    val subtaskResults: List<SubtaskResult> = emptyList(), // 逐测试点明细（有 detail 时）
     val compileError: String? = null,            // 编译错误详情
+)
+
+/** 单个测试点（测试用例）的评测状态。[id] 为洛谷原始编号（展示时 +1，即 #1 起）。 */
+data class TestCaseResult(
+    val id: Int,
+    val status: Int? = null,
+    val timeMs: Long? = null,
+    val memoryKb: Long? = null,
+    val score: Int? = null,
+)
+
+/** 一个子任务及其下各测试点的评测状态。 */
+data class SubtaskResult(
+    val id: Int,
+    val status: Int? = null,
+    val score: Int? = null,
+    val testCases: List<TestCaseResult> = emptyList(),
+)
+
+/** 题目搜索结果的单条摘要。 */
+data class ProblemSummary(
+    val pid: String,
+    val name: String,
+    val difficulty: Int = 0,
 )
 
 /**
@@ -111,6 +137,64 @@ object LuoguApiService {
             else -> envelope.data.problem
         }
     }
+
+    /**
+     * 按关键词搜索题目，返回摘要列表（可能为空）。
+     *
+     * 命中洛谷 `/problem/list` 接口：该接口即使带 `_contentOnly=1` 仍返回 HTML，
+     * 数据同样藏在 `lentille-context` 脚本块内，故复用与拉题一致的解析方式；
+     * 反爬的 302/C3VK 由 [LuoguHttpClient] 的 CookieJar 自动跟随处理。
+     */
+    suspend fun searchProblems(keyword: String, page: Int = 1): List<ProblemSummary> =
+        withContext(Dispatchers.IO) {
+            val kw = keyword.trim()
+            if (kw.isEmpty()) return@withContext emptyList()
+
+            val encoded = URLEncoder.encode(kw, "UTF-8")
+            val url = "https://www.luogu.com.cn/problem/list?keyword=$encoded&page=$page&_contentOnly=1"
+            val request = Request.Builder()
+                .url(url)
+                .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+                .get()
+                .build()
+
+            val body = try {
+                LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+                    if (response.code != 200) {
+                        throw LuoguApiException("搜索失败：HTTP ${response.code}")
+                    }
+                    response.body?.string() ?: throw LuoguApiException("搜索响应为空")
+                }
+            } catch (e: LuoguApiException) {
+                throw e
+            } catch (e: Exception) {
+                throw LuoguApiException("网络请求异常：${e.message}", e)
+            }
+
+            val block = CONTEXT_REGEX.find(body)?.groupValues?.get(1)?.trim()
+                ?: throw LuoguApiException("搜索结果解析失败（可能被拦截），请稍后重试")
+
+            val root = try {
+                json.parseToJsonElement(block) as? JsonObject
+                    ?: throw LuoguApiException("搜索结果非 JSON 对象")
+            } catch (e: LuoguApiException) {
+                throw e
+            } catch (e: Exception) {
+                throw LuoguApiException("搜索结果解析失败：${e.message}", e)
+            }
+
+            val data = root["data"] as? JsonObject ?: return@withContext emptyList()
+            val problems = data["problems"] as? JsonObject ?: return@withContext emptyList()
+            val result = problems["result"] as? JsonArray ?: return@withContext emptyList()
+
+            result.mapNotNull { el ->
+                val obj = el as? JsonObject ?: return@mapNotNull null
+                val pid = (obj["pid"] as? JsonPrimitive)?.content?.trim().orEmpty()
+                if (pid.isEmpty()) return@mapNotNull null
+                val name = (obj["name"] as? JsonPrimitive)?.content?.trim().orEmpty()
+                ProblemSummary(pid = pid, name = name, difficulty = obj.asInt("difficulty") ?: 0)
+            }
+        }
 
     /**
      * 从洛谷 `/ranking` 页面提取 CSRF token（`<meta name="csrf-token">`）。
@@ -381,10 +465,11 @@ object LuoguApiService {
      * [LuoguApiException]（未登录或数据被拦截时数据块缺失）。
      */
     suspend fun getSubmissionStatus(rid: String): SubmissionStatus = withContext(Dispatchers.IO) {
-        val url = "https://www.luogu.com.cn/record/$rid"
+        val url = "https://www.luogu.com.cn/record/$rid?_contentOnly=1"
         val request = Request.Builder()
             .url(url)
             .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            .apply { loginCookieHeader()?.let { header("Cookie", it) } }
             .get()
             .build()
 
@@ -436,9 +521,74 @@ object LuoguApiService {
             timeMs = recordBlock?.asLong("time"),
             memoryKb = recordBlock?.asLong("memory"),
             subtaskInfo = subtasks,
+            subtaskResults = parseSubtaskResults(recordBlock),
             compileError = recordBlock?.get("compileErrorMessage")
                 ?.let { it as? JsonPrimitive }?.content?.trim()?.ifBlank { null },
         )
+    }
+
+    /**
+     * 解析 `record.detail.judgeResult.subtasks` 下的逐测试点状态。
+     *
+     * 实测结构（洛谷 `/record/{rid}?_contentOnly=1`）中 `subtasks` 与 `testCases` 均为**数组**：
+     * ```
+     * detail.judgeResult.subtasks = [
+     *   { id, score, status, time, memory,
+     *     testCases: [ { id, status, time, memory, score, description } ] }
+     * ]
+     * ```
+     * 亦兼容按 id 索引的对象形态。`detail` 仅在记录对当前身份可见时下发（如本人提交）；
+     * 缺失时返回空列表，由调用方回退到 [SubmissionStatus.subtaskInfo] 的汇总文本。
+     * 子任务与测试点均按 id 升序排列；测试点展示编号为 id + 1（洛谷原始 id 从 0 起）。
+     */
+    private fun parseSubtaskResults(record: JsonObject?): List<SubtaskResult> {
+        if (record == null) return emptyList()
+
+        // 逐测试点数据可能出现的位置，逐一尝试、命中即用：
+        //   record.detail.judgeResult.subtasks（实测形态）
+        //   record.judgeResult.subtasks
+        //   record.subtasks
+        val subtasksEl = listOfNotNull(
+            ((record["detail"] as? JsonObject)?.get("judgeResult") as? JsonObject)?.get("subtasks"),
+            (record["judgeResult"] as? JsonObject)?.get("subtasks"),
+            record["subtasks"],
+        ).firstOrNull() ?: return emptyList()
+
+        return toNamedObjects(subtasksEl)
+            .mapNotNull { (fallbackId, obj) ->
+                val sid = obj.asInt("id") ?: fallbackId ?: return@mapNotNull null
+                val cases = toNamedObjects(obj["testCases"])
+                    .mapNotNull { (fallbackCid, cobj) ->
+                        val cid = cobj.asInt("id") ?: fallbackCid ?: return@mapNotNull null
+                        TestCaseResult(
+                            id = cid,
+                            status = cobj.asInt("status"),
+                            timeMs = cobj.asLong("time"),
+                            memoryKb = cobj.asLong("memory"),
+                            score = cobj.asInt("score"),
+                        )
+                    }
+                    .sortedBy { it.id }
+                SubtaskResult(
+                    id = sid,
+                    status = obj.asInt("status"),
+                    score = obj.asInt("score"),
+                    testCases = cases,
+                )
+            }
+            .sortedBy { it.id }
+    }
+
+    /**
+     * 把「数组形态」或「按 id 索引的对象形态」统一成 (兜底id, 对象) 列表。
+     * 数组形态下 id 取自元素内部字段，故兜底 id 为 null。
+     */
+    private fun toNamedObjects(element: JsonElement?): List<Pair<Int?, JsonObject>> = when (element) {
+        is JsonArray -> element.mapNotNull { it as? JsonObject }.map { null to it }
+        is JsonObject -> element.entries.mapNotNull { (key, value) ->
+            (value as? JsonObject)?.let { key.toIntOrNull() to it }
+        }
+        else -> emptyList()
     }
 
     /** 从 JSON 对象宽松读取 int 字段。 */
