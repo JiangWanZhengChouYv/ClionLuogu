@@ -15,9 +15,9 @@
 -->
 <plugins>
   <plugin
-          id="com.user.clionluogu"
-          url="https://github.com/JiangWanZhengChouYv/ClionLuogu/releases/download/v1.3.0/ClionLuogu-1.3.0.zip"
-          version="1.3.0">
+          id="com.jiangwanzhengchouyv.clionluogu"
+          url="https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@v1.3.1/dist/ClionLuogu-1.3.1.zip"
+          version="1.3.1">
     <idea-version since-build="243"/>
     <name>ClionLuogu</name>
   </plugin>
