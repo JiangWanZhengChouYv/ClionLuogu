@@ -15,7 +15,7 @@
   一般不需要手改。
 -->
 <plugins>
-    <plugin
+      <plugin
           id="com.jiangwanzhengchouyv.clionluogu"
           url="https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@v1.3.2/dist/ClionLuogu-1.3.2.zip"
           version="1.3.2">
