@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <defs>
+    <linearGradient id="clionluoguCheck" gradientUnits="userSpaceOnUse" x1="6" y1="31" x2="33" y2="9">
+      <stop offset="0" stop-color="#62B4EE"/>
+      <stop offset="1" stop-color="#2C7FC4"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#clionluoguCheck)"
+        d="M6.161 23.182 L13.161 30.682 A3.2 3.2 0 0 0 17.839 26.318 L10.839 18.818 A3.2 3.2 0 0 0 6.161 23.182 Z"/>
+  <path fill="url(#clionluoguCheck)"
+        d="M17.921 30.594 L33.921 12.094 A3.2 3.2 0 0 0 29.079 7.906 L13.079 26.406 A3.2 3.2 0 0 0 17.921 30.594 Z"/>
+</svg>

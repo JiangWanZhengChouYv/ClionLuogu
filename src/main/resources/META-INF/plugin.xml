@@ -16,18 +16,20 @@
 
     <change-notes><![CDATA[
 <ul>
+  <li><b>1.1.0</b>：全新自定义图标——透明底的渐变对勾，适配明暗主题、贴合 IDE 简约风格；修复点击侧边栏后内容区空白（补回 JCEF 依赖声明）</li>
   <li><b>1.0.1</b>：更新插件描述与作者信息</li>
   <li><b>1.0.0</b>：首个正式版——6 个页签（评测 / 拉取 / 搜索 / 预览 / 提交 / 登录）、逐测试点彩色方块、评测记录项目级持久化、题目预览（内置 MathJax 渲染公式与图片）、拉取的 .md 改为规范 Markdown</li>
 </ul>
 ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>org.intellij.plugins.markdown</depends>
+    <depends>com.intellij.modules.jcef</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <applicationConfigurable parentId="tools" instance="com.user.clionluogu.settings.LuoguConfigurable"/>
         <notificationGroup id="ClionLuogu.Notifications" displayType="BALLOON"/>
         <toolWindow id="ClionLuogu" anchor="right"
+                    icon="/icons/luogu.svg"
                     factoryClass="com.user.clionluogu.ui.LuoguToolWindowFactory"/>
     </extensions>
 
