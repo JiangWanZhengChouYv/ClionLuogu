@@ -9,6 +9,7 @@ import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguHttpClient
 import com.user.clionluogu.api.LuoguProblemDto
 import com.user.clionluogu.api.ProblemSummary
+import com.user.clionluogu.api.UserProfile
 import com.user.clionluogu.storage.SecureCookieStore
 import kotlinx.coroutines.runBlocking
 
@@ -199,6 +200,56 @@ object LuoguActions {
     fun logout() {
         SecureCookieStore.clear()
         LuoguHttpClient.clearCookies()
+    }
+
+    /**
+     * 读取已保存的登录态，回调当前登录 uid（未登录 / 凭据不完整时为 null）。
+     *
+     * 说明：访问钥匙串 [SecureCookieStore.load] 是同步阻塞操作，故放到后台线程执行，
+     * 避免在 EDT 上卡顿；这里不用 [SecureCookieStore.hasLogin]（它内部同样同步读钥匙串）。
+     * 判定口径与 hasLogin 一致：`__client_id` 与 `_uid` 均有非空值才算已登录。回调切回 EDT。
+     */
+    fun loadLoginState(onResult: (Int?) -> Unit) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val uid = try {
+                val cookies = SecureCookieStore.load()
+                val clientId = cookies["__client_id"].orEmpty()
+                val uidRaw = cookies["_uid"].orEmpty()
+                if (clientId.isNotBlank() && uidRaw.isNotBlank()) uidRaw.trim().toIntOrNull() else null
+            } catch (_: Throwable) {
+                null
+            }
+            invokeLater { onResult(uid) }
+        }
+    }
+
+    /** 拉取用户资料；成功回调 [UserProfile]，失败回调可读错误。 */
+    fun loadProfile(
+        uid: Int,
+        onResult: (UserProfile) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val profile = try {
+                runBlocking { LuoguApiService.getUserProfile(uid) }
+            } catch (t: Throwable) {
+                invokeLater { onError(readableMessage(t)) }
+                return@executeOnPooledThread
+            }
+            invokeLater { onResult(profile) }
+        }
+    }
+
+    /** 后台下载头像图片字节；回调参数为 null 表示失败（静默，由 UI 跳过展示）。 */
+    fun loadAvatar(url: String, onResult: (ByteArray?) -> Unit) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val bytes = try {
+                runBlocking { LuoguApiService.fetchAvatar(url) }
+            } catch (_: Throwable) {
+                null
+            }
+            invokeLater { onResult(bytes) }
+        }
     }
 
     /** 把回调切回 EDT 执行。 */

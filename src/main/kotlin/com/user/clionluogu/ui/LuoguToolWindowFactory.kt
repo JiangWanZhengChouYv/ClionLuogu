@@ -54,7 +54,15 @@ class LuoguToolWindowFactory : ToolWindowFactory {
         previewContent.setDisposer(previewPanel)
         contentManager.addContent(previewContent)
         addContent(submitPanel, LuoguTabs.TAB_SUBMIT)
-        addContent(loginPanel, LuoguTabs.TAB_LOGIN)
+
+        // 登录页内容显式创建，便于随登录态改写页签标题（登录 ↔ 账号）
+        val loginContent = contentFactory.createContent(loginPanel, LuoguTabs.TAB_LOGIN, false)
+        loginContent.setPreferredFocusableComponent(loginPanel)
+        contentManager.addContent(loginContent)
+        loginPanel.onLoginStateChanged = { loggedIn ->
+            loginContent.displayName =
+                if (loggedIn) LuoguTabs.TAB_ACCOUNT else LuoguTabs.TAB_LOGIN
+        }
 
         toolWindow.setTitleActions(listOf(ClearHistoryAction()))
     }

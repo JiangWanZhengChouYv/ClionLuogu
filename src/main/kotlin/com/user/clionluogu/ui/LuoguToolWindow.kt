@@ -5,6 +5,7 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.JBSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
@@ -107,14 +108,11 @@ class LuoguToolWindow(private val project: Project) {
         detailPane.add(detailTop, BorderLayout.NORTH)
         detailPane.add(JBScrollPane(detailArea), BorderLayout.CENTER)
 
-        val split = javax.swing.JSplitPane(
-            javax.swing.JSplitPane.HORIZONTAL_SPLIT,
-            listPane,
-            detailPane,
-        )
-        split.resizeWeight = 0.4
-        split.dividerLocation = 220
-        split.border = JBUI.Borders.empty(4)
+        val split = JBSplitter(false, 0.4f).apply {
+            firstComponent = listPane
+            secondComponent = detailPane
+            border = JBUI.Borders.empty(4)
+        }
 
         rootPanel.add(split, BorderLayout.CENTER)
 

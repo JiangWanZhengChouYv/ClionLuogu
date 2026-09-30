@@ -58,6 +58,37 @@ data class ProblemSummary(
 )
 
 /**
+ * 洛谷用户资料（宽松解析：除 [uid] 外字段均可缺省，缺省时保持 null 由 UI 决定是否展示）。
+ *
+ * 字段名来源：实测 `GET https://www.luogu.com.cn/user/{uid}?_contentOnly=1`
+ * （2026-09-30 以浏览器 UA 抓取 uid=2270787）响应中 `lentille-context` 脚本块
+ * `data.user` 的对象键，实测为：
+ * uid / avatar / name / slogan / badge / isAdmin / isBanned / color / ccfLevel / xcpcLevel /
+ * background / eloValue / followingCount / followerCount / ranking / passedProblemCount /
+ * submittedProblemCount / elo / registerTime / introduction。
+ * 其中 [avatarUrl] 对应 JSON 字段 `avatar`（URL 字符串）。
+ *
+ * [verified]：「认证状态」字段，**实测响应中未出现**（未能核实），也无可靠旁证；
+ * 为兼容起见保留为可空字段，但 **界面不再渲染该字段**（改为展示实测存在的
+ * [passedProblemCount] / [submittedProblemCount]）。
+ */
+data class UserProfile(
+    val uid: Int,                        // data.user.uid（非空）
+    val name: String? = null,            // data.user.name
+    val avatarUrl: String? = null,       // data.user.avatar（头像图片 URL）
+    val slogan: String? = null,          // data.user.slogan（个性签名）
+    val color: String? = null,           // data.user.color（如 Gray/Blue/Green/Orange/Red）
+    val ccfLevel: Int? = null,           // data.user.ccfLevel（CCF 等级）
+    val ranking: Int? = null,            // data.user.ranking（咕值排名）
+    val followingCount: Int? = null,     // data.user.followingCount（关注数）
+    val followerCount: Int? = null,      // data.user.followerCount（粉丝数）
+    val passedProblemCount: Int? = null,     // data.user.passedProblemCount（通过题目数，实测存在）
+    val submittedProblemCount: Int? = null,  // data.user.submittedProblemCount（提交题目数，实测存在）
+    val eloValue: Int? = null,           // data.user.eloValue（elo，实测可为 null）
+    val verified: Boolean? = null,       // 认证状态：实测接口不下发，保留字段但界面不再渲染
+)
+
+/**
  * 洛谷评测状态码 → 可读文本。
  *
  * 映射依据 vscode-luogu 的 `RecordStatus` 表（洛谷 `/record/{rid}` 返回的 `record.status`）：
@@ -262,6 +293,133 @@ object LuoguApiService {
         (first["name"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.ifBlank { null }
     } catch (_: Exception) {
         null
+    }
+
+    /**
+     * 拉取用户资料。
+     *
+     * 请求 `GET /user/{uid}?_contentOnly=1`（带登录 cookie，复用浏览器伪装头），按以下顺序解析：
+     * 1. **先整体按 JSON 解析**：部分网关/接口会直接返回 JSON，此时取 `data.user`；
+     * 2. 失败再退回 [CONTEXT_REGEX]：实测该 URL 返回的是 `text/html`，JSON 藏在
+     *    `<script id="lentille-context">` 脚本块内，从中取 `data.user`；
+     * 3. 两者都拿不到（如被反爬拦截）时，走 `/api/user/search?keyword=<uid>` 回退，至少取到用户名。
+     *
+     * 映射一律**宽松**：字段缺失 / 类型不符置 null，不中断解析；回退仍取不到 name 时抛可读
+     * [LuoguApiException]。
+     */
+    suspend fun getUserProfile(uid: Int): UserProfile = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("https://www.luogu.com.cn/user/$uid?_contentOnly=1")
+            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            // 与提交/评测一致：带上登录 cookie，确保拿到本人可见的完整资料
+            .apply { loginCookieHeader()?.let { header("Cookie", it) } }
+            .get()
+            .build()
+
+        val body = try {
+            LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+                if (response.code != 200) {
+                    throw LuoguApiException("用户资料请求失败：HTTP ${response.code}")
+                }
+                response.body?.string() ?: throw LuoguApiException("用户资料响应为空")
+            }
+        } catch (e: LuoguApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw LuoguApiException("用户资料网络异常：${e.message}", e)
+        }
+
+        // 主路径 1：整个响应体直接按 JSON 解析（返回 JSON 的网关形态）
+        parseProfileFromJson(body, uid)?.let { return@withContext it }
+
+        // 主路径 2：从 lentille-context 脚本块解析（实测该 URL 的 HTML 形态）
+        parseProfileFromLentille(body, uid)?.let { return@withContext it }
+
+        // 回退：以上都失败时用 /api/user/search 至少取到用户名
+        val fallbackName = try {
+            fallbackUserName(uid)
+        } catch (_: Exception) {
+            null
+        }
+        if (fallbackName.isNullOrBlank()) {
+            throw LuoguApiException("用户资料解析失败（数据块缺失或非 JSON），请稍后重试")
+        }
+        UserProfile(uid = uid, name = fallbackName)
+    }
+
+    /** 整个响应体即 JSON（`data.user`）时的解析；解析失败返回 null（不抛异常）。 */
+    private fun parseProfileFromJson(body: String, uid: Int): UserProfile? = try {
+        val root = json.parseToJsonElement(body) as? JsonObject
+        val data = root?.get("data") as? JsonObject
+        val user = data?.get("user") as? JsonObject
+        user?.toUserProfile(uid)
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * 从 `lentille-context` 脚本块解析 `data.user` 为用户资料；任一步失败返回 null（不抛异常），
+     * 交由 [getUserProfile] 决定是否回退。
+     */
+    private fun parseProfileFromLentille(body: String, uid: Int): UserProfile? = try {
+        val block = CONTEXT_REGEX.find(body)?.groupValues?.get(1)?.trim()
+        val root = block?.let { json.parseToJsonElement(it) as? JsonObject }
+        val data = root?.get("data") as? JsonObject
+        val user = data?.get("user") as? JsonObject
+        user?.toUserProfile(uid)
+    } catch (_: Exception) {
+        null
+    }
+
+    /** 回退路径：请求 `/api/user/search?keyword=<uid>` 取用户名；失败返回 null。 */
+    private fun fallbackUserName(uid: Int): String? {
+        val request = Request.Builder()
+            .url("https://www.luogu.com.cn/api/user/search?keyword=$uid")
+            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            .get()
+            .build()
+        return LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+            if (response.code != 200) return@use null
+            response.body?.string()?.let { parseSearchUser(it) }
+        }
+    }
+
+    /** 把 `data.user` 对象宽松映射为 [UserProfile]：字段缺失 / 类型不符 → null。 */
+    private fun JsonObject.toUserProfile(fallbackUid: Int): UserProfile = UserProfile(
+        uid = asInt("uid") ?: fallbackUid,
+        name = asString("name"),
+        avatarUrl = asString("avatar"),
+        slogan = asString("slogan"),
+        color = asString("color"),
+        ccfLevel = asInt("ccfLevel"),
+        ranking = asInt("ranking"),
+        followingCount = asInt("followingCount"),
+        followerCount = asInt("followerCount"),
+        passedProblemCount = asInt("passedProblemCount"),
+        submittedProblemCount = asInt("submittedProblemCount"),
+        eloValue = asInt("eloValue"),
+        verified = asBool("verified"),
+    )
+
+    /**
+     * 下载头像图片字节；请求失败、响应为空或解码前异常时返回 null（静默，交由 UI 跳过）。
+     * 头像位于 CDN，公开可访问，无需携带登录 cookie。
+     */
+    suspend fun fetchAvatar(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        if (url.isBlank()) return@withContext null
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+                .get()
+                .build()
+            LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use null
+                response.body?.bytes()?.takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -596,5 +754,13 @@ object LuoguApiService {
 
     /** 从 JSON 对象宽松读取 long 字段。 */
     private fun JsonObject.asLong(key: String): Long? = (this[key] as? JsonPrimitive)?.content?.toLongOrNull()
+
+    /** 从 JSON 对象宽松读取字符串字段；空串 / 非字符串 / 缺失 → null。 */
+    private fun JsonObject.asString(key: String): String? =
+        (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.ifBlank { null }
+
+    /** 从 JSON 对象宽松读取布尔字段；非布尔 / 缺失 / null → null。 */
+    private fun JsonObject.asBool(key: String): Boolean? =
+        (this[key] as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
 
 }
