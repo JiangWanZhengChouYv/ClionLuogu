@@ -85,9 +85,9 @@ echo "✓ 已推送 tag ${TAG}"
 
 # ---- 5. Release（说明取自 plugin.xml 的 change-notes，保持两处一致）----
 NOTES_FILE="$(mktemp)"
-python3 - "${VERSION}" "${ASSET_URL}" > "${NOTES_FILE}" <<'PY'
+python3 - "${VERSION}" "${ASSET_URL}" "${BUILT_ID}" > "${NOTES_FILE}" <<'PY'
 import re, sys
-v, asset = sys.argv[1], sys.argv[2]
+v, asset, pid = sys.argv[1], sys.argv[2], sys.argv[3]
 x = open("src/main/resources/META-INF/plugin.xml", encoding="utf-8").read()
 m = re.search(r"<change-notes><!\[CDATA\[(.*?)\]\]></change-notes>", x, re.S)
 item = ""
@@ -95,15 +95,43 @@ for li in re.findall(r"<li>(.*?)</li>", m.group(1) if m else "", re.S):
     if re.search(r"<b>%s</b>" % re.escape(v), li):
         item = li.strip()
         break
-print(item)
+
+print("## ClionLuogu %s" % v)
+print()
+print("在 CLion 里一站式刷洛谷：拉题、预览、提交、看评测。")
+print()
+print("### 本次更新")
+print()
+print(item if item else "（本版无单独说明）")
+print()
+print("### 功能一览")
+print()
+print("- 侧边栏 6 个页签：评测 / 拉取 / 搜索 / 预览 / 提交 / 登录（登录后为「账号」）")
+print("- 评测详情按子任务展示逐测试点彩色方块（悬停看耗时 / 内存）")
+print("- 提交记录按项目持久化（含源码），重启可恢复、可查看 / 复制当次代码")
+print("- 题目预览：搜索页双击即拉题面，内置 MathJax 渲染 LaTeX 公式与图片")
+print("- 登录后可查看账号数据（头像 / 咕值 / 排名 / 关注 / 粉丝 / CCF 等级 / 通过题目数）")
+print()
+print("### 安装 / 更新")
+print()
+print("**方式一（推荐，可自动更新）** —— 在 IDE 里配置自定义插件仓库后，新版本会自动出现在更新列表：")
+print()
+print("`Settings | Plugins | ⚙ | Manage Plugin Repositories` 添加：")
+print("`https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@main/updatePlugins.xml`")
+print()
+print("**方式二（手动）** —— 下载 zip 后 `Settings | Plugins | ⚙ | Install Plugin from Disk...`，选该 zip 并重启 IDE：")
+print()
+print("%s" % asset)
+print()
+print("### 环境要求")
+print()
+print("- CLion 2024.3+（`since-build 243`，未设 `until-build` 上限）")
+print("- 需启用内置插件 Web Browser (JCEF)（CLion 默认启用）")
 print()
 print("---")
 print()
-print("下载（国内直连，jsDelivr）：%s" % asset)
-print()
-print("或在 IDE 里配置自定义插件仓库后自动接收更新：")
-print("`Settings -> Plugins -> Manage Plugin Repositories` 添加")
-print("`https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@main/updatePlugins.xml`")
+print("> 非官方工具：仅使用你自己的登录态，不会自动登录、不会绕过验证码。")
+print("> 插件 ID：`%s`" % pid)
 PY
 
 if gh release view "${TAG}" >/dev/null 2>&1; then
