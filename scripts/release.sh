@@ -116,9 +116,10 @@ x = open(p, encoding="utf-8").read()
 m = re.search(r'<plugin\s[^>]*version="[^"]*"[^>]*>', x, re.S)
 assert m, "updatePlugins.xml 里找不到 <plugin> 元素"
 tag = m.group(0)
+assert re.search(r'url="[^"]*"', tag) and re.search(r'version="[^"]*"', tag), \
+    "updatePlugins.xml 的 <plugin> 缺少 url / version 属性"
 new_tag = re.sub(r'url="[^"]*"', 'url="%s"' % url, tag, count=1)
 new_tag = re.sub(r'version="[^"]*"', 'version="%s"' % v, new_tag, count=1)
-assert new_tag != tag, "updatePlugins.xml 的 <plugin> 里没找到 url / version 属性"
 x = x[:m.start()] + new_tag + x[m.end():]
 open(p, "w", encoding="utf-8").write(x)
 
