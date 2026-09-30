@@ -116,35 +116,61 @@ else
 fi
 rm -f "${NOTES_FILE}"
 
-# ---- 6. 更新自定义插件仓库描述文件 ----
-python3 - "${BUILT_ID}" "${VERSION}" "${ASSET_URL}" <<'PY'
-import re, sys
+# ---- 6. 更新自定义插件仓库描述文件（含描述 / 变更说明，仓库列表可见）----
+python3 - "${ZIP}" "${JAR_IN_ZIP}" "${ASSET_URL}" <<'PY'
+import io, re, sys, zipfile
 import xml.etree.ElementTree as ET
 
-pid, v, url = sys.argv[1], sys.argv[2], sys.argv[3]
+zip_path, jar_in_zip, url = sys.argv[1], sys.argv[2], sys.argv[3]
+
+# 从构建产物里取权威元数据（id / version / name / idea-version / 描述 / 本版变更说明）
+with zipfile.ZipFile(zip_path) as z:
+    jar_bytes = z.read(jar_in_zip)
+with zipfile.ZipFile(io.BytesIO(jar_bytes)) as z:
+    px = z.read("META-INF/plugin.xml").decode("utf-8")
+
+pid = re.search(r"<id>([^<]+)</id>", px).group(1)
+ver = re.search(r"<version>([^<]+)</version>", px).group(1)
+name = re.search(r"<name>([^<]+)</name>", px).group(1)
+idea = re.search(r"<idea-version[^>]*?/>", px)
+idea_tag = idea.group(0) if idea else '<idea-version since-build="243"/>'
+
+dm = re.search(r"<description><!\[CDATA\[(.*?)\]\]></description>", px, re.S)
+desc = dm.group(1).strip() if dm else ""
+
+cm = re.search(r"<change-notes><!\[CDATA\[(.*?)\]\]></change-notes>", px, re.S)
+notes = ""
+for li in re.findall(r"<li>(.*?)</li>", cm.group(1) if cm else "", re.S):
+    if re.search(r"<b>%s</b>" % re.escape(ver), li):
+        notes = li.strip()
+        break
+
+# 重建整个 <plugin> 元素（幂等；注意用 <plugin\s 避免匹配到注释里提到的 <plugin> 字样）
+new_plugin = (
+    '  <plugin\n'
+    '          id="%s"\n'
+    '          url="%s"\n'
+    '          version="%s">\n'
+    '    %s\n'
+    '    <name>%s</name>\n'
+    '    <description><![CDATA[%s]]></description>\n'
+    '    <change-notes><![CDATA[%s]]></change-notes>\n'
+    '  </plugin>' % (pid, url, ver, idea_tag, name, desc, notes)
+)
+
 p = "updatePlugins.xml"
 x = open(p, encoding="utf-8").read()
-
-# 只改写 <plugin ...> 开标签内部，绝不碰 XML 声明 <?xml version="1.0"?>。
-# 两个坑：(1) 对整个文件 re.sub version="..." 会改到 XML 声明，写出非法 XML；
-#        (2) 注释里也出现过 <plugin> 字样，所以要求 <plugin 后紧跟空白、且标签内含 version= 属性。
-m = re.search(r'<plugin\s[^>]*version="[^"]*"[^>]*>', x, re.S)
-assert m, "updatePlugins.xml 里找不到 <plugin> 元素"
-tag = m.group(0)
-assert all(re.search(r'%s="[^"]*"' % a, tag) for a in ("id", "url", "version")), \
-    "updatePlugins.xml 的 <plugin> 缺少 id / url / version 属性"
-new_tag = re.sub(r'id="[^"]*"', 'id="%s"' % pid, tag, count=1)
-new_tag = re.sub(r'url="[^"]*"', 'url="%s"' % url, new_tag, count=1)
-new_tag = re.sub(r'version="[^"]*"', 'version="%s"' % v, new_tag, count=1)
-x = x[:m.start()] + new_tag + x[m.end():]
+x, n = re.subn(r"<plugin\s.*?</plugin>", new_plugin, x, count=1, flags=re.S)
+assert n == 1, "updatePlugins.xml 里没找到 plugin 元素块"
 open(p, "w", encoding="utf-8").write(x)
 
-# 写回后重新解析一次，确保仍是合法 XML，且 id / version 已同步为产物里的值
+# 写回后重新解析，确保仍是合法 XML 且关键内容都在
 root = ET.parse(p).getroot()
 el = root.find("plugin")
-assert el is not None, "updatePlugins.xml 解析后找不到 plugin 元素"
-assert el.get("id") == pid and el.get("version") == v, "updatePlugins.xml 校验失败"
-print("✓ updatePlugins.xml 已指向 %s %s（XML 合法）" % (pid, v))
+assert el is not None, "解析后找不到 plugin 元素"
+assert el.get("id") == pid and el.get("version") == ver, "id / version 不匹配"
+assert el.find("description") is not None and el.find("change-notes") is not None, "缺少描述或变更说明"
+print("✓ updatePlugins.xml 已更新: %s %s（含描述与变更说明，XML 合法）" % (pid, ver))
 PY
 git add updatePlugins.xml
 if ! git diff --cached --quiet; then

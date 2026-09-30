@@ -11,7 +11,8 @@
     - <idea-version> 也必须与产物一致（本插件构建后为 since-build="243"，无 until-build）
     - url 必须是 HTTPS 且直接指向插件 zip
 
-  本文件由 scripts/release.sh 在发版时自动改写 <plugin> 元素上的 version 与 url，一般不需要手改。
+  本文件由 scripts/release.sh 在发版时自动重建 plugin 元素（id / url / version / 名称 / 描述 / 变更说明），
+  一般不需要手改。
 -->
 <plugins>
   <plugin
