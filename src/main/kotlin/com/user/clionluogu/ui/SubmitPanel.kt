@@ -12,7 +12,6 @@ import com.intellij.util.ui.JBUI
 import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.service.LuoguActions
-import com.user.clionluogu.storage.SecureCookieStore
 import java.awt.BorderLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
@@ -95,10 +94,6 @@ class SubmitPanel(
     }
 
     private fun doSubmit() {
-        if (!SecureCookieStore.hasLogin()) {
-            statusLabel.text = "请先登录"
-            return
-        }
         val pid = pidField.text.trim()
         if (!LuoguPidValidator.isValidPid(pid)) {
             statusLabel.text = "题号格式无效"

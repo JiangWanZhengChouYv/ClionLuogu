@@ -135,6 +135,11 @@ object LuoguActions {
         onError: (String) -> Unit,
     ) {
         ApplicationManager.getApplication().executeOnPooledThread {
+            // 登录态检查放在后台线程：SecureCookieStore 会访问系统钥匙串，不能在 EDT 上同步调用
+            if (!SecureCookieStore.hasLogin()) {
+                invokeLater { onError("请先登录（到「登录」页填写 __client_id 与 _uid）") }
+                return@executeOnPooledThread
+            }
             val rid = try {
                 runBlocking {
                     LuoguApiService.submitCode(
