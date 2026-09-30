@@ -111,8 +111,9 @@ p = "updatePlugins.xml"
 x = open(p, encoding="utf-8").read()
 
 # 只改写 <plugin ...> 开标签内部，绝不碰 XML 声明 <?xml version="1.0"?>。
-# （踩过坑：直接对整个文件 re.sub version="..." 会改到 XML 声明，写出非法 XML。）
-m = re.search(r'<plugin\b[^>]*>', x, re.S)
+# 两个坑：(1) 对整个文件 re.sub version="..." 会改到 XML 声明，写出非法 XML；
+#        (2) 注释里也出现过 <plugin> 字样，所以要求 <plugin 后紧跟空白、且标签内含 version= 属性。
+m = re.search(r'<plugin\s[^>]*version="[^"]*"[^>]*>', x, re.S)
 assert m, "updatePlugins.xml 里找不到 <plugin> 元素"
 tag = m.group(0)
 new_tag = re.sub(r'url="[^"]*"', 'url="%s"' % url, tag, count=1)
