@@ -104,14 +104,28 @@ rm -f "${NOTES_FILE}"
 # ---- 6. 更新自定义插件仓库描述文件 ----
 python3 - "${VERSION}" "${ASSET_URL}" <<'PY'
 import re, sys
+import xml.etree.ElementTree as ET
+
 v, url = sys.argv[1], sys.argv[2]
 p = "updatePlugins.xml"
 x = open(p, encoding="utf-8").read()
-x, n1 = re.subn(r'url="[^"]*"', 'url="%s"' % url, x, count=1)
-x, n2 = re.subn(r'version="[^"]*"', 'version="%s"' % v, x, count=1)
-assert n1 == 1 and n2 == 1, "updatePlugins.xml 结构不符合预期"
+
+# 只改写 <plugin ...> 开标签内部，绝不碰 XML 声明 <?xml version="1.0"?>。
+# （踩过坑：直接对整个文件 re.sub version="..." 会改到 XML 声明，写出非法 XML。）
+m = re.search(r'<plugin\b[^>]*>', x, re.S)
+assert m, "updatePlugins.xml 里找不到 <plugin> 元素"
+tag = m.group(0)
+new_tag = re.sub(r'url="[^"]*"', 'url="%s"' % url, tag, count=1)
+new_tag = re.sub(r'version="[^"]*"', 'version="%s"' % v, new_tag, count=1)
+assert new_tag != tag, "updatePlugins.xml 的 <plugin> 里没找到 url / version 属性"
+x = x[:m.start()] + new_tag + x[m.end():]
 open(p, "w", encoding="utf-8").write(x)
-print("✓ updatePlugins.xml 已指向 %s" % v)
+
+# 写回后重新解析一次，确保仍是合法 XML
+root = ET.parse(p).getroot()
+el = root.find("plugin")
+assert el is not None and el.get("version") == v, "updatePlugins.xml 校验失败"
+print("✓ updatePlugins.xml 已指向 %s（XML 合法）" % v)
 PY
 git add updatePlugins.xml
 if ! git diff --cached --quiet; then
