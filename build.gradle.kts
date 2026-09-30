@@ -34,7 +34,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 intellijPlatform {
     pluginConfiguration {
-        id = "com.user.clionluogu"
+        id = "com.jiangwanzhengchouyv.clionluogu"
         name = "ClionLuogu"
         version = project.version.toString()
         vendor {
