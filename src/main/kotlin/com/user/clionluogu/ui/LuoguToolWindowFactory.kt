@@ -5,6 +5,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
 import com.user.clionluogu.action.ClearHistoryAction
+import com.user.clionluogu.action.PunchNowAction
 import com.user.clionluogu.service.LuoguActions
 import javax.swing.JComponent
 
@@ -74,6 +75,7 @@ class LuoguToolWindowFactory : ToolWindowFactory {
                 if (loggedIn) LuoguTabs.TAB_ACCOUNT else LuoguTabs.TAB_LOGIN
         }
 
-        toolWindow.setTitleActions(listOf(ClearHistoryAction()))
+        // 标题栏工具按钮：清空记录 + 手动打卡（打卡错过启动通知时在这里补）
+        toolWindow.setTitleActions(listOf(ClearHistoryAction(), PunchNowAction()))
     }
 }

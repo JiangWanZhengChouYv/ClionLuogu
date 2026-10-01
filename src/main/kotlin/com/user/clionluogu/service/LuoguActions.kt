@@ -9,6 +9,8 @@ import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguHttpClient
 import com.user.clionluogu.api.LuoguProblemDto
 import com.user.clionluogu.api.ProblemSummary
+import com.user.clionluogu.api.PunchResult
+import com.user.clionluogu.api.PunchState
 import com.user.clionluogu.api.SolutionPage
 import com.user.clionluogu.api.UserProfile
 import com.user.clionluogu.storage.SecureCookieStore
@@ -143,6 +145,37 @@ object LuoguActions {
                 return@executeOnPooledThread
             }
             invokeLater { onResult(solutions) }
+        }
+    }
+
+    /** 查询今日打卡状态；网络/解析失败也回调可读文案（启动提醒对失败是静默的）。 */
+    fun checkPunch(onResult: (PunchState) -> Unit, onError: (String) -> Unit) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val state = try {
+                runBlocking { LuoguApiService.getPunchState() }
+            } catch (t: Throwable) {
+                invokeLater { onError(readableMessage(t)) }
+                return@executeOnPooledThread
+            }
+            invokeLater { onResult(state) }
+        }
+    }
+
+    /**
+     * 执行打卡。
+     *
+     * 只有**用户点了通知里的「打卡」按钮**（或按侧边栏标题栏的打卡图标）才会走到这里——
+     * 本插件不做自动打卡，也不做定时轮询。
+     */
+    fun punch(onResult: (PunchResult) -> Unit, onError: (String) -> Unit) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val result = try {
+                runBlocking { LuoguApiService.punch() }
+            } catch (t: Throwable) {
+                invokeLater { onError(readableMessage(t)) }
+                return@executeOnPooledThread
+            }
+            invokeLater { onResult(result) }
         }
     }
 

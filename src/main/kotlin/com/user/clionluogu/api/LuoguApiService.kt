@@ -9,6 +9,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -82,6 +85,20 @@ data class SolutionPage(
 )
 
 /**
+ * 首页「打卡」状态。
+ *
+ * 打卡入口只存在于**旧版首页的服务端渲染**里（SPA 的 36 条路由与 145 个 chunk 都搜不到打卡/punch）。
+ * [punchable] 的判据是打卡按钮 `[name=punch]`：实测未打卡时 `btn=1`，打完卡 `btn=0`（整块被服务端换掉）。
+ */
+data class PunchState(val punchable: Boolean)
+
+/** 一次打卡的结果。 */
+data class PunchResult(
+    val code: Int,
+    val message: String?,
+)
+
+/**
  * 洛谷用户资料（宽松解析：除 [uid] 外字段均可缺省，缺省时保持 null 由 UI 决定是否展示）。
  *
  * 字段名来源：实测 `GET https://www.luogu.com.cn/user/{uid}?_contentOnly=1`
@@ -152,6 +169,21 @@ object LuoguApiService {
 
     /** 首页 `<meta name="csrf-token">` 提取。 */
     private val CSRF_REGEX = Regex("""(?s)<meta name="csrf-token" content="(.*?)">""")
+
+    /**
+     * 打卡按钮是否存在的判据。
+     *
+     * 必须限定在**标签属性**上：首页始终下发那段 jQuery 处理函数，源码里就写着
+     * `$("[name=punch]")`，若只匹配 `name=punch` 则未登录页面也会被判成有按钮。
+     */
+    private val PUNCH_BUTTON_REGEX = Regex("""(?is)<[a-z]+[^>]*name\s*=\s*["']?punch["']?""")
+
+    /** 打卡响应是喂给 `eval` 的 JS 字面量，键可能带也可能不带引号，故只宽松取 code。 */
+    private val PUNCH_CODE_REGEX = Regex("""["']?code["']?\s*:\s*(\d+)""")
+
+    /** `message` 的键名引号同样可有可无（实测 `{code:200,message:"…"}` 这种裸键形态）。 */
+    private val PUNCH_MESSAGE_REGEX =
+        Regex("""["']?message["']?\s*:\s*(["'])((?:(?!\1)[^\\]|\\.)*?)\1""")
 
     /** 拉取题目公开数据。 */
     suspend fun getProblem(pid: String): LuoguProblemDto = withContext(Dispatchers.IO) {
@@ -361,6 +393,114 @@ object LuoguApiService {
             hasMore = perPage > 0 && total > 0 && page * perPage < total,
             solutions = items,
         )
+    }
+
+    /**
+     * 查询今日打卡状态（GET 首页）。
+     *
+     * 判据是**打卡按钮在不在**：实测未打卡的登录首页有 `[name=punch]`，打过卡后按钮随整块 HTML 一起消失。
+     * 这里只取状态，不取任何令牌——打卡本身走 [punch]，那条 GET 不需要验证码。
+     *
+     * 未登录直接返回不可打卡：既省掉一次 ~74KB 的首页请求，也因为登录态缺失时页面本就没有打卡入口。
+     * 首页偶尔被反爬打成空壳，故与其余请求一样走 [LuoguHttpClient.getClient]（内存 CookieJar 会先拿到
+     * C3VK 再跟随重定向），并带上 [loginSnapshot] 的凭据。
+     */
+    suspend fun getPunchState(): PunchState = withContext(Dispatchers.IO) {
+        val login = loginSnapshot()
+        if (login.header == null) return@withContext PunchState(punchable = false)
+
+        val request = Request.Builder()
+            .url("https://www.luogu.com.cn/")
+            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            .header("Cookie", login.header)
+            .get()
+            .build()
+        val body = try {
+            LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+                if (response.code != 200) throw LuoguApiException("打卡状态获取失败：HTTP ${response.code}，${login.hint}")
+                response.body?.string().orEmpty()
+            }
+        } catch (e: LuoguApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw LuoguApiException("打卡状态网络异常：${e.message}", e)
+        }
+
+        PunchState(punchable = PUNCH_BUTTON_REGEX.containsMatchIn(body))
+    }
+
+    /**
+     * 打卡：`GET /index/ajax_punch?_=<毫秒时间戳>`，**不需要任何令牌或验证码**。
+     *
+     * 端点形态取自公开实现（Hughpig/LuoguAutoPunch）：只要登录 cookie、`Referer` 指向首页
+     * 与 `x-requested-with: XMLHttpRequest`。首页那段 jQuery 的 `$.post(…, {verify})` 是**另一条带图形码的旧路径**，
+     * 拿空 verify 去 POST 会被判 `{"status":400,"data":"会话超时…"}`——本仓库先误走了那条路。
+     *
+     * 响应是 JSON：`code` 200 成功（`more.html` 为当日运势文案）、201「今天已经打过卡了」、401 cookie 失效。
+     */
+    suspend fun punch(): PunchResult = withContext(Dispatchers.IO) {
+        val login = loginSnapshot()
+        if (login.header == null) {
+            throw LuoguApiException("打卡需要登录（到「登录」页填写 __client_id 与 _uid）")
+        }
+        val request = Request.Builder()
+            .url("https://www.luogu.com.cn/index/ajax_punch?_=${System.currentTimeMillis()}")
+            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Cookie", login.header)
+            .get()
+            .build()
+
+        val body = try {
+            LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (response.code !in 200..299) {
+                    throw LuoguApiException("打卡请求失败：HTTP ${response.code}，${login.hint}")
+                }
+                text
+            }
+        } catch (e: LuoguApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw LuoguApiException("打卡网络异常：${e.message}", e)
+        }
+
+        parsePunchResponse(body)
+    }
+
+    /**
+     * 打卡响应的两种形态都得吃：
+     *
+     * 1. 正常 JSON（GET 打卡）：`{code:200, message:"…", more:{html:"<…>当日运势<…>"}}`，
+     *    成功时给用户看的文案在 `more.html` 里（剥掉标签）；
+     * 2. 旧版 POST 路径的失败信封：`{"status":400,"data":"会话超时，请刷新页面后重试","trace":""}`，
+     *    原因在 `data`。
+     *
+     * 两种都取不到状态码时抛 [LuoguApiException] 并带响应片段，避免把「解析不出来」说成「打卡失败」。
+     */
+    private fun parsePunchResponse(body: String): PunchResult {
+        val root = runCatching { json.parseToJsonElement(body) as? JsonObject }.getOrNull()
+        if (root != null) {
+            val status = root["code"]?.jsonPrimitive?.intOrNull ?: root["status"]?.jsonPrimitive?.intOrNull
+            if (status != null) {
+                val fortune = (root["more"] as? JsonObject)?.let { more ->
+                    more["html"]?.jsonPrimitive?.contentOrNull
+                        ?.replace(Regex("<[^>]+>"), "")
+                        ?.replace("&nbsp;", " ")
+                        ?.trim()
+                        ?.ifBlank { null }
+                }
+                return PunchResult(
+                    code = status,
+                    message = root["message"]?.jsonPrimitive?.contentOrNull
+                        ?: fortune
+                        ?: root["data"]?.jsonPrimitive?.contentOrNull,
+                )
+            }
+        }
+        val code = PUNCH_CODE_REGEX.find(body)?.groupValues?.get(1)?.toIntOrNull()
+            ?: throw LuoguApiException("打卡响应无法解析（长度 ${body.length}）：${body.take(120)}")
+        return PunchResult(code = code, message = PUNCH_MESSAGE_REGEX.find(body)?.groupValues?.get(2))
     }
 
     /**
