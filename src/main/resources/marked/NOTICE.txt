@@ -1,0 +1,3 @@
+marked/marked.min.js
+来源于 marked v12.0.2（https://github.com/markedjs/marked），授权为 MIT License（Copyright (c) 2011-2024, Christopher Jeffrey）。
+用于把洛谷题解的 Markdown 正文渲染为 HTML，随插件内置、不联网加载。

@@ -14,22 +14,32 @@ import javax.swing.JComponent
 class LuoguToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val window = LuoguToolWindow(project)
-        val fetchPanel = FetchPanel(project)
         val previewPanel = PreviewPanel(project)
-        val searchPanel = SearchPanel(project) { pid ->
-            LuoguActions.loadProblem(
-                project = project,
-                pid = pid,
-                onResult = { problem ->
-                    previewPanel.showProblem(problem)
-                    LuoguTabs.openTab(project, LuoguTabs.TAB_PREVIEW)
-                },
-                onError = { msg ->
-                    previewPanel.showMessage(msg)
-                    LuoguTabs.openTab(project, LuoguTabs.TAB_PREVIEW)
-                },
-            )
+
+        // 各页签的「查看题解」入口：让预览页切到题解模式，并把该页签带到前台
+        val showSolutions: (String) -> Unit = { pid ->
+            previewPanel.showSolutionsFor(pid)
+            LuoguTabs.openTab(project, LuoguTabs.TAB_PREVIEW)
         }
+        val fetchPanel = FetchPanel(project, onSolutions = showSolutions)
+        val searchPanel = SearchPanel(
+            project = project,
+            onPreview = { pid ->
+                LuoguActions.loadProblem(
+                    project = project,
+                    pid = pid,
+                    onResult = { problem ->
+                        previewPanel.showProblem(problem)
+                        LuoguTabs.openTab(project, LuoguTabs.TAB_PREVIEW)
+                    },
+                    onError = { msg ->
+                        previewPanel.showMessage(msg)
+                        LuoguTabs.openTab(project, LuoguTabs.TAB_PREVIEW)
+                    },
+                )
+            },
+            onSolutions = showSolutions,
+        )
         val submitPanel = SubmitPanel(project) { pid, rid, lang, code ->
             window.trackSubmission(pid, rid, lang, code)
         }

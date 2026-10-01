@@ -9,6 +9,7 @@ import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguHttpClient
 import com.user.clionluogu.api.LuoguProblemDto
 import com.user.clionluogu.api.ProblemSummary
+import com.user.clionluogu.api.SolutionPage
 import com.user.clionluogu.api.UserProfile
 import com.user.clionluogu.storage.SecureCookieStore
 import kotlinx.coroutines.runBlocking
@@ -117,6 +118,31 @@ object LuoguActions {
                 return@executeOnPooledThread
             }
             invokeLater { onResult(results) }
+        }
+    }
+
+    /**
+     * 拉取某题的洛谷题解（一页）；成功回调 [SolutionPage]，失败回调可读错误。
+     *
+     * 这里**不做**「是否已登录」的预检查：钥匙串读到的快照与账号页看到的不一致过（误报「需要登录」），
+     * 而洛谷在没有登录态时本就会回 401 —— 交给服务器判定，错误文案由 [LuoguApiService.getSolutions]
+     * 带上状态码与凭据诊断，比预检查更可信。
+     */
+    fun loadSolutions(
+        project: Project,
+        pid: String,
+        page: Int,
+        onResult: (SolutionPage) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val solutions = try {
+                runBlocking { LuoguApiService.getSolutions(pid, page) }
+            } catch (t: Throwable) {
+                invokeLater { onError(readableMessage(t)) }
+                return@executeOnPooledThread
+            }
+            invokeLater { onResult(solutions) }
         }
     }
 

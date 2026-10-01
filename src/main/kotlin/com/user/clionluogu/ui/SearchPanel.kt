@@ -18,15 +18,17 @@ import javax.swing.JButton
 import javax.swing.JList
 import javax.swing.JPanel
 
-/** 搜索页：关键词 → 后台搜索 → 列表展示结果，可拉取选中题目、双击结果预览题面。 */
+/** 搜索页：关键词 → 后台搜索 → 列表展示结果，可拉取选中题目、双击预览题面、查看选中题的题解。 */
 class SearchPanel(
     private val project: Project,
     private val onPreview: (String) -> Unit,
+    private val onSolutions: (String) -> Unit,
 ) : JPanel(BorderLayout()) {
 
     private val keywordField = JBTextField()
     private val searchButton = JButton("搜索")
     private val fetchSelectedButton = JButton("拉取选中")
+    private val solutionsButton = JButton("查看题解")
     private val listModel = DefaultListModel<ProblemSummary>()
     private val resultList = JBList(listModel)
     private val statusLabel = JBLabel("输入关键词开始搜索（双击结果可预览题面）")
@@ -52,6 +54,7 @@ class SearchPanel(
         inputRow.add(keywordField)
         inputRow.add(searchButton)
         inputRow.add(fetchSelectedButton)
+        inputRow.add(solutionsButton)
 
         val top = JPanel(BorderLayout())
         top.add(inputRow, BorderLayout.NORTH)
@@ -62,6 +65,7 @@ class SearchPanel(
 
         searchButton.addActionListener { doSearch() }
         fetchSelectedButton.addActionListener { fetchSelected() }
+        solutionsButton.addActionListener { showSolutions() }
 
         resultList.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
@@ -113,5 +117,14 @@ class SearchPanel(
             onResult = { text -> statusLabel.text = text },
             onError = { msg -> statusLabel.text = msg },
         )
+    }
+
+    /** 把选中题目交给预览页的题解模式；拉取与渲染均由预览页负责。 */
+    private fun showSolutions() {
+        val problem = resultList.selectedValue ?: run {
+            statusLabel.text = "请先选择一条结果"
+            return
+        }
+        onSolutions(problem.pid)
     }
 }

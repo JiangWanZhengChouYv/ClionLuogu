@@ -58,6 +58,30 @@ data class ProblemSummary(
 )
 
 /**
+ * 单篇题解（列表项即含正文，无需再请求详情）。
+ *
+ * 字段来源（2026-10-01 实测，见 [getSolutions] 的说明）：题解在洛谷内部就是一篇 article，
+ * 标识是**字符串 [lid]**（如 `dddotkf8`）而非数字 id；[contentMarkdown] 是 **Markdown 源码**
+ * （如 `> Read on **Luogu** | [UOJ](...)`），不是 HTML；票数字段名为 [upvote]。
+ */
+data class SolutionSummary(
+    val lid: String,
+    val title: String,
+    val author: String? = null,
+    val upvote: Int? = null,
+    val contentMarkdown: String? = null,
+)
+
+/** 一页题解及分页信息。 */
+data class SolutionPage(
+    val pid: String,
+    val page: Int,
+    val total: Int,
+    val hasMore: Boolean,
+    val solutions: List<SolutionSummary>,
+)
+
+/**
  * 洛谷用户资料（宽松解析：除 [uid] 外字段均可缺省，缺省时保持 null 由 UI 决定是否展示）。
  *
  * 字段名来源：实测 `GET https://www.luogu.com.cn/user/{uid}?_contentOnly=1`
@@ -226,6 +250,118 @@ object LuoguApiService {
                 ProblemSummary(pid = pid, name = name, difficulty = obj.asInt("difficulty") ?: 0)
             }
         }
+
+    /**
+     * 拉取某题的洛谷题解（一页）。
+     *
+     * 需要登录：未登录时 `/problem/solution/{pid}` 在四种请求形态（`_contentOnly=1`、纯 HTML、
+     * `X-Requested-With`、`Accept: application/json`）下**一律返回 401**，故与 [getUserProfile]/[submitCode]
+     * 共用同一份凭据（见 [loginSnapshot]）。
+     *
+     * 结构实测（2026-10-01，未用到登录态）：题解页前端读的是 `solutions.count` 与 `solutions.result`
+     * （见其 chunk `columba~183a77506b1246fd.js` 里的 `solutions.count` / `solutions.result` /
+     * `article.upvote` / `article.lid`），条目即 article——用公开的 `GET /article?page=1&_contentOnly=1`
+     * 可比对到同形状：`{count, perPage, result:[{lid, title, author{name,uid}, upvote, time, content}]}`，
+     * 其中 `content` 为 **Markdown 源码**。分页只有 `page` 与 `orderBy`（`weight`/`time`）两个查询参数，
+     * 没有 pageCount，故 [SolutionPage.hasMore] 由 `page * perPage < count` 推出。
+     *
+     * 解析骨架沿用 [searchProblems]（同一份 `lentille-context` 数据块）；`result` 兼容数组与按 id
+     * 索引的对象两种形态（[toNamedObjects]），字段缺失一律置 null 不中断。
+     * 失败时抛出的 [LuoguApiException] 一律带上状态码与 [LoginSnapshot.hint] 凭据诊断，
+     * 使「凭据没读到 / 凭据被拒 / 结构不匹配」可分辨。
+     */
+    suspend fun getSolutions(pid: String, page: Int = 1): SolutionPage = withContext(Dispatchers.IO) {
+        val url = "https://www.luogu.com.cn/problem/solution/$pid?page=$page&_contentOnly=1"
+        val login = loginSnapshot()
+        val request = Request.Builder()
+            .url(url)
+            .apply { LuoguHttpClient.HEADERS.forEach { (k, v) -> header(k, v) } }
+            .apply { login.header?.let { header("Cookie", it) } }
+            .get()
+            .build()
+
+        val body = try {
+            LuoguHttpClient.getClient().newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                // 每条错误都带上状态码与凭据诊断（只含 uid 与 __client_id 长度），
+                // 用来分清「凭据没读到」「凭据被服务器拒」「要先通过本题」三种情况。
+                when (response.code) {
+                    200 -> text
+                    401 -> throw LuoguApiException("题解请求未被接受（HTTP 401，登录态无效或已过期）：${login.hint}")
+                    403 -> throw LuoguApiException("题解访问被拒绝（HTTP 403${extractErrorMessage(text)}）：${login.hint}")
+                    else -> throw LuoguApiException("题解获取失败：HTTP ${response.code}，${login.hint}")
+                }
+            }
+        } catch (e: LuoguApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw LuoguApiException("题解网络异常：${e.message}", e)
+        }
+
+        val block = CONTEXT_REGEX.find(body)?.groupValues?.get(1)?.trim()
+            ?: throw LuoguApiException(
+                "题解数据块缺失（HTTP 200，正文 ${body.length} 字符，" +
+                    (if (body.contains("csrf-token")) "含 csrf-token，疑似被反爬拦截" else "不含 csrf-token，疑似返回登录/错误页") +
+                    "），${login.hint}"
+            )
+
+        val solutions = try {
+            val root = json.parseToJsonElement(block) as? JsonObject
+                ?: throw LuoguApiException("题解数据非 JSON 对象")
+            val data = root["data"] as? JsonObject
+                ?: throw LuoguApiException("题解响应缺少 data（顶层键：${root.keys.joinToString()}）")
+            val solutionsEl = data["solutions"]
+                ?: throw LuoguApiException("题解响应缺少 solutions（data 键：${data.keys.joinToString()}）")
+            solutionsEl as? JsonObject
+                ?: throw LuoguApiException("solutions 不是对象（实际为 ${solutionsEl::class.simpleName}）")
+        } catch (e: LuoguApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw LuoguApiException("题解解析失败：${e.message}", e)
+        }
+
+        val resultEl = solutions["result"]
+            ?: throw LuoguApiException("题解响应缺少 result（solutions 键：${solutions.keys.joinToString()}）")
+
+        val items = toNamedObjects(resultEl).mapNotNull { (fallbackId, obj) ->
+            // 题解在洛谷内部就是一篇 article，标识是字符串 lid；万一改回数字 id 也一并兼容
+            val lid = obj.asString("lid")
+                ?: (obj["id"] as? JsonPrimitive)?.content?.trim()?.ifBlank { null }
+                ?: fallbackId?.toString()
+                ?: return@mapNotNull null
+            SolutionSummary(
+                lid = lid,
+                title = obj.asString("title") ?: "题解 $lid",
+                author = (obj["author"] as? JsonObject)?.asString("name"),
+                upvote = obj.asInt("upvote"),
+                contentMarkdown = obj.asString("content"),
+            )
+        }
+
+        // result 有内容却一条都没解析出来 → 条目字段名与预期不符，直接报出真实键名
+        if (items.isEmpty() && resultEl is JsonArray && resultEl.isNotEmpty()) {
+            val first = resultEl[0] as? JsonObject
+                ?: throw LuoguApiException("题解条目不是 JSON 对象（首项为 ${resultEl[0]::class.simpleName}）")
+            throw LuoguApiException("题解条目缺少 lid（首项键：${first.keys.joinToString()}）")
+        }
+
+        val total = solutions.asInt("count") ?: 0
+        // 洛谷不下发 pageCount，前端按 perPage 自行分页；perPage 缺失时按本页条数估算
+        val perPage = solutions.asInt("perPage") ?: items.size
+        // 服务器报告有 N 篇却一条都没返回：不是「本题无题解」，而是参数或结构不匹配，如实报出
+        if (items.isEmpty() && total > 0) {
+            throw LuoguApiException(
+                "服务器报告共 $total 篇题解，但 result 为空（solutions 键：${solutions.keys.joinToString()}）"
+            )
+        }
+        SolutionPage(
+            pid = pid,
+            page = page,
+            total = total,
+            hasMore = perPage > 0 && total > 0 && page * perPage < total,
+            solutions = items,
+        )
+    }
 
     /**
      * 从洛谷 `/ranking` 页面提取 CSRF token（`<meta name="csrf-token">`）。
@@ -573,17 +709,38 @@ object LuoguApiService {
     }
 
     /**
+     * 一次钥匙串读取形成的登录态快照，供请求头与诊断文案共用
+     * （分两次读可能拿到不一致的值，那正是「已登录却提示需登录」难以判断的原因之一）。
+     */
+    private data class LoginSnapshot(val uid: Int?, val clientId: String?) {
+
+        /** OkHttp 的 `Cookie` 请求头值；缺任一凭据（或 uid 非数字）时为 null。 */
+        val header: String? =
+            if (uid == null || clientId.isNullOrBlank()) null else "_uid=$uid;__client_id=$clientId"
+
+        /** 诊断文案：**只报 uid 与 `__client_id` 的长度，绝不输出其值**。 */
+        val hint: String = when {
+            uid == null && clientId.isNullOrBlank() -> "未读到登录凭据"
+            clientId.isNullOrBlank() -> "_uid=$uid 但 __client_id 缺失"
+            uid == null -> "有 __client_id（${clientId.length} 位）但 _uid 缺失或不是数字"
+            else -> "_uid=$uid、__client_id 已携带（${clientId.length} 位）"
+        }
+    }
+
+    /** 读取已保存的登录 cookie 快照。 */
+    private fun loginSnapshot(): LoginSnapshot {
+        val cookies = SecureCookieStore.load()
+        return LoginSnapshot(
+            uid = cookies["_uid"].orEmpty().trim().toIntOrNull(),
+            clientId = cookies["__client_id"].orEmpty().trim().ifBlank { null },
+        )
+    }
+
+    /**
      * 从安全存储读取登录 cookie，拼成 `_uid=<uid>; __client_id=<clientID>` 请求头。
      * 取不到（未登录 / uid 非数字）时返回 null。
      */
-    private fun loginCookieHeader(): String? {
-        val cookies = SecureCookieStore.load()
-        val clientId = cookies["__client_id"].orEmpty()
-        val uid = cookies["_uid"].orEmpty()
-        if (clientId.isBlank() || uid.isBlank()) return null
-        if (uid.toIntOrNull() == null) return null
-        return "_uid=$uid;__client_id=$clientId"
-    }
+    private fun loginCookieHeader(): String? = loginSnapshot().header
 
     /** 从响应头 Location / JSON 的 rid / 回跳地址中提取评测记录 id。 */
     private fun extractRid(response: Response, body: String): String? {
