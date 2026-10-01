@@ -69,11 +69,21 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
             punchDay = value
         }
 
+    /** 未显式设置时默认在 AC 后询问是否清理本题文件。 */
+    private var acCleanup: Boolean? = null
+
+    var acCleanupEnabled: Boolean
+        get() = acCleanup ?: true
+        set(value) {
+            acCleanup = value
+        }
+
     override fun getState(): LuoguSettings = this
 
     override fun loadState(state: LuoguSettings) {
         this.template = state.template
         this.punchReminder = state.punchReminder
         this.punchDay = state.punchDay
+        this.acCleanup = state.acCleanup
     }
 }

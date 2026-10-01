@@ -14,6 +14,7 @@ import com.user.clionluogu.api.SubmissionStatus
 import com.user.clionluogu.api.SubtaskResult
 import com.user.clionluogu.api.TestCaseResult
 import com.user.clionluogu.api.statusTextOf
+import com.user.clionluogu.service.AcCleanupService
 import com.user.clionluogu.service.JudgePollingService
 import com.user.clionluogu.storage.SubmissionHistoryService
 import java.awt.BorderLayout
@@ -158,6 +159,9 @@ class LuoguToolWindow(private val project: Project) {
     fun updateSubmission(rid: String, status: SubmissionStatus) {
         runOnEdt {
             val entry = entries.firstOrNull { it.rid == rid } ?: return@runOnEdt
+            // 只在「跃迁到 AC」时提示清理：一次 AC 会被 onUpdate 与 onDone 各回调一次，
+            // 若只判 statusCode == AC 会连弹两个模态框。
+            val reachedAc = status.statusCode == AC_CODE && entry.status?.statusCode != AC_CODE
             entry.status = status
             val idx = entries.indexOf(entry)
             if (idx >= 0 && idx < listModel.size()) {
@@ -166,6 +170,7 @@ class LuoguToolWindow(private val project: Project) {
             if (entry === selectedEntry()) {
                 renderDetail(entry)
             }
+            if (reachedAc) AcCleanupService.promptAndCleanup(project, entry.pid)
         }
         SubmissionHistoryService.getInstance(project).update(rid, status)
     }
@@ -280,6 +285,9 @@ class LuoguToolWindow(private val project: Project) {
     companion object {
         /** 承载评测页 [LuoguToolWindow] 实例的用户数据键（由 [LuoguToolWindowFactory] 写入工具窗口）。 */
         val WINDOW_KEY: Key<LuoguToolWindow> = Key.create("com.user.clionluogu.LuoguToolWindow")
+
+        /** 洛谷「通过 (AC)」状态码，与 `statusTextOf` 的映射表一致。 */
+        private const val AC_CODE = 12
     }
 }
 

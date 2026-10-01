@@ -1,8 +1,7 @@
-# 开发记录：ClionLuogu 1.4.2「查看题解」+ 1.5.0「每日打卡」
+# 开发记录：ClionLuogu 1.4.2 题解 / 1.5.0 打卡 / 1.6.0 AC 后清理
 
-> 从克隆仓库到两次发版的全过程记录。第 1–7 节是 `1.4.2`（tag `v1.4.2`，
-> Release：https://github.com/JiangWanZhengChouYv/ClionLuogu/releases/tag/v1.4.2），
-> 第 8–10 节是 `1.5.0`（打卡）。
+> 从克隆仓库到三次发版的全过程记录。第 1–7 节是 `1.4.2`（查看题解），
+> 第 8–10 节是 `1.5.0`（每日打卡），第 11–14 节是 `1.6.0`（AC 后询问清理本题文件）。
 
 ## 1. 需求与既定口径
 
@@ -140,4 +139,63 @@ PATH="/opt/homebrew/bin:$PATH" ./scripts/release.sh
 - **别把页面里出现的某个变量名当成协议的必需项。**首页 JS 里读 `verify`，我就假定打卡必需 verify，
   连猜两轮判据；真正的端点是免校验的 GET。正确顺序应是先找一份能跑通的外部实现或文档，再动手写解析。
 - 用户界面位置这类事别自己发挥：下拉框、Tools 菜单两次被否，最后落在标题栏与「清空记录」并排才对。
+
+---
+
+# 追加：1.6.0「AC 后询问是否清理本题文件」
+
+## 11. 需求与口径
+
+拉一题会在项目根留下 `{pid}.cpp`、`{pid}.md`、`{pid}_samples/`，AC 之后要手动删。
+功能：评测**变成 AC 的那一刻**弹窗问一句要不要删掉这三样。三条已确认口径：
+
+- **每次 AC 都问**（不按题号去重、不跨重启记忆）；
+- **确认后全删**，不因 `.cpp` 有未保存改动而跳过——但弹窗必须把「未保存的修改会一并丢弃」写在脸上；
+- 提供**关闭入口**，放设置页（与打卡提醒开关并排），不做成弹窗第三按钮。
+
+## 12. 触发点：一个会连弹两个模态框的坑
+
+落点选在 `ui/LuoguToolWindow.kt` 的 `updateSubmission(rid, status)`——`trackSubmission` 把轮询的
+`onUpdate` / `onDone` 都汇到这里，且已在 EDT 语义内（模态框必须在 EDT）。
+
+关键坑：`JudgePollingService.startPolling` 对一次 AC 会回调**两次**——先 `onUpdate(AC)`，
+紧接着 `isTerminal(12)` 成立 → `finish → onDone(AC)`（JudgePollingService.kt:81-84），
+两者都打到 `updateSubmission`。若判据写成 `status.statusCode == 12`，同一次 AC 会连弹两个框。
+→ 改成**状态跃迁**判断：`entry.status?.statusCode != AC_CODE && status.statusCode == AC_CODE`，
+且必须在 `entry.status = status` 赋值**之前**取旧值。
+
+另一条：`loadHistory()` 恢复历史记录时是直接给 `entry.status` 赋值、不走 `updateSubmission`，
+所以重启不会对着昨天的 AC 弹框——这个性质要保住，别把清理逻辑挂到加载路径上。
+
+## 13. 删除实现与边界
+
+`service/AcCleanupService.kt`：
+
+- 只认项目根下三个**精确名字**（`{pid}.cpp` / `{pid}.md` / `{pid}_samples`，目录名与
+  `ProblemFileGenService.sampleFolderName` 对齐），不递归搜索、不按内容匹配；三者都不存在就**不弹空提示**。
+- 弹窗列出实际存在的待删项，样例目录额外报「N 个样例文件」。
+- 确认后：先把目录展开成「子文件在前、目录在后」，逐个 `FileEditorManager.closeFile`，
+  再在 `runWriteAction` 里按序删除（`VirtualFile.delete` 不允许删非空目录）；
+  单个失败（只读/被占用）不中断其余，最后 `markDirtyAndRefresh` + 通知「已删除 N 项（M 项失败）」。
+- **提交记录不动**：删的是工作区文件，`SubmissionHistoryService` 保留。
+
+两个 SDK 签名意外（都靠编译报错发现，不是猜出来的）：
+
+- `FileEditorManager.closeFile` 是单参 `(VirtualFile)`——我按印象试了 `(file, false)` / `(null, file)` 都被否；
+- `VirtualFile.delete()` 在 2024.3 需要 `ProgressIndicator` 参数，写 `file.delete()` 报
+  「No value passed for parameter 'p0'」，改成 `file.delete(null)`。
+
+设置项 `acCleanupEnabled` 同样要记得在 `LuoguSettings.loadState` 里补赋值——这里漏过一次会重启丢值。
+
+## 14. 验证与发版
+
+- 冒烟清单（用户已按此在真实 CLion 验过并通过）：一次 AC 只弹一个框；删除后三类文件消失、
+  提交记录仍在；同题再 AC 仍弹；点「保留」一个不少；`.cpp` 有未保存改动时确认后正常删除；
+  关掉开关后不再弹且重启仍生效（验 `loadState`）。
+- **测插件仍然不能用 `runIde`**（沙箱 CLion 2024.3 缺 `com.intellij.modules.jcef`，插件整体不加载），
+  照旧 Install Plugin from Disk 装 `build/distributions/ClionLuogu-1.6.0.zip`。
+- 发版走内置 `scripts/release.sh`（带 `JAVA_HOME`=CLion JBR、`HTTP(S)_PROXY`=7890），
+  产物校验、`dist/` 入库、tag、Release、`updatePlugins.xml` 重建与 jsDelivr purge 全由脚本完成。
+- 顺手修掉文档里的一处陈旧：README 还写着打卡入口在「菜单 洛谷 → 洛谷每日打卡」，实际在侧边栏标题栏。
+
 
