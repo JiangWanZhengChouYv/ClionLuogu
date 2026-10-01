@@ -13,8 +13,10 @@ import com.user.clionluogu.api.PunchResult
 import com.user.clionluogu.api.PunchState
 import com.user.clionluogu.api.SolutionPage
 import com.user.clionluogu.api.UserProfile
+import com.user.clionluogu.settings.LuoguSettings
 import com.user.clionluogu.storage.SecureCookieStore
 import kotlinx.coroutines.runBlocking
+import java.io.File
 
 /**
  * 洛谷核心业务的无弹窗封装，供各 Action 与工具窗口页面复用。
@@ -316,8 +318,62 @@ object LuoguActions {
         }
     }
 
+    /**
+     * 对拍页的探测：样例目录、要编译的源文件、以及可用的编译器。
+     * **全在后台线程**（`--version` 也是起子进程），回调切回 EDT。
+     *
+     * 这里刻意**不去找 `cmake-build` 里的产物**：产物名取决于 target 名，还得他先手动 Build，
+     * 不如让 [CompilerService] 现场把 `Pxxx.cpp` 编出来——点一下就跑完。
+     */
+    fun probeCompareTarget(
+        project: Project,
+        pid: String,
+        onResult: (CompareTarget) -> Unit,
+    ) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val base = runCatching { project.basePath }.getOrNull()?.let { File(it) }
+            val settings = LuoguSettings.getInstance()
+            val detected = CompilerService.detect(settings.compareCompilerPath)
+            if (base == null || !base.isDirectory) {
+                invokeLater {
+                    onResult(CompareTarget(null, null, null, detected.compiler, detected.overrideIgnored))
+                }
+                return@executeOnPooledThread
+            }
+            val found = SampleSetService.discover(base, pid)
+            val source = runCatching { File(base, "$pid.cpp").takeIf { it.isFile } }.getOrNull()
+            invokeLater {
+                onResult(
+                    CompareTarget(
+                        projectBasePath = base.path,
+                        samples = found,
+                        sourcePath = source?.path,
+                        compiler = detected.compiler,
+                        compilerNotice = detected.overrideIgnored,
+                    ),
+                )
+            }
+        }
+    }
+
     /** 把回调切回 EDT 执行。 */
     private fun invokeLater(action: () -> Unit) {
         ApplicationManager.getApplication().invokeLater(action)
     }
 }
+
+/**
+ * [LuoguActions.probeCompareTarget] 的结果。
+ *
+ * 三个可空字段各自对应一条独立的失败原因，UI 要能分别说清楚：
+ * [projectBasePath] 为空 = 项目没落盘；[samples] 为空 = 同上；[compiler] 为空 = 这台机器没找到编译器。
+ */
+data class CompareTarget(
+    val projectBasePath: String?,
+    val samples: SampleSetService.Found?,
+    /** 项目根下 `Pxxx.cpp` 的路径；还没拉题或改过名时为 null。 */
+    val sourcePath: String?,
+    val compiler: CompilerService.Compiler?,
+    /** 设置里的编译器不可用、已回落时的那句提示。 */
+    val compilerNotice: String?,
+)

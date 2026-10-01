@@ -1,6 +1,5 @@
 package com.user.clionluogu.ui
 
-import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
@@ -128,10 +127,5 @@ class SubmitPanel(
         )
     }
 
-    private fun guessedPid(): String? {
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
-        val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return null
-        val name = file.name
-        return if (name.endsWith(".cpp")) name.removeSuffix(".cpp") else null
-    }
+    private fun guessedPid(): String? = CurrentFilePid.guess(project)
 }

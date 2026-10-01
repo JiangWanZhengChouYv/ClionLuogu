@@ -15,8 +15,16 @@ object LuoguTabs {
     const val TAB_SEARCH = "搜索"
     const val TAB_PREVIEW = "预览"
     const val TAB_SUBMIT = "提交"
+    const val TAB_COMPARE = "对拍"
     const val TAB_LOGIN = "登录"
     const val TAB_ACCOUNT = "账号"
+
+    /** 评测页的窗口实例；页签尚未创建（或工具窗口没打开）时为 null。 */
+    fun evalWindow(project: Project): LuoguToolWindow? {
+        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID) ?: return null
+        return toolWindow.contentManager.findContent(TAB_EVAL)
+            ?.getUserData(LuoguToolWindow.WINDOW_KEY)
+    }
 
     /** 打开工具窗口并选中指定页签。内容创建可能异步，故找不到时下一轮 EDT 再试一次。 */
     fun openTab(project: Project, tabName: String) {

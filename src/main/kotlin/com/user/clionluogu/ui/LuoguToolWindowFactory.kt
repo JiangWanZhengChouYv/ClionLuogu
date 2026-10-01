@@ -10,7 +10,7 @@ import com.user.clionluogu.service.LuoguActions
 import javax.swing.JComponent
 
 /**
- * 侧边工具窗口工厂：装配「评测 / 拉取 / 搜索 / 预览 / 提交 / 登录」多页签与工具栏。
+ * 侧边工具窗口工厂：装配「评测 / 拉取 / 搜索 / 预览 / 提交 / 对拍 / 登录」多页签与工具栏。
  */
 class LuoguToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -45,6 +45,7 @@ class LuoguToolWindowFactory : ToolWindowFactory {
             window.trackSubmission(pid, rid, lang, code)
         }
         val loginPanel = LoginPanel(project)
+        val comparePanel = SampleComparePanel(project)
 
         val contentFactory = ContentFactory.getInstance()
         val contentManager = toolWindow.contentManager
@@ -65,6 +66,7 @@ class LuoguToolWindowFactory : ToolWindowFactory {
         previewContent.setDisposer(previewPanel)
         contentManager.addContent(previewContent)
         addContent(submitPanel, LuoguTabs.TAB_SUBMIT)
+        addContent(comparePanel, LuoguTabs.TAB_COMPARE)
 
         // 登录页内容显式创建，便于随登录态改写页签标题（登录 ↔ 账号）
         val loginContent = contentFactory.createContent(loginPanel, LuoguTabs.TAB_LOGIN, false)

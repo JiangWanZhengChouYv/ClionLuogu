@@ -15,6 +15,7 @@ import com.user.clionluogu.api.SubtaskResult
 import com.user.clionluogu.api.TestCaseResult
 import com.user.clionluogu.api.statusTextOf
 import com.user.clionluogu.service.AcCleanupService
+import com.user.clionluogu.service.JudgeNotifyService
 import com.user.clionluogu.service.JudgePollingService
 import com.user.clionluogu.storage.SubmissionHistoryService
 import java.awt.BorderLayout
@@ -159,9 +160,13 @@ class LuoguToolWindow(private val project: Project) {
     fun updateSubmission(rid: String, status: SubmissionStatus) {
         runOnEdt {
             val entry = entries.firstOrNull { it.rid == rid } ?: return@runOnEdt
-            // 只在「跃迁到 AC」时提示清理：一次 AC 会被 onUpdate 与 onDone 各回调一次，
-            // 若只判 statusCode == AC 会连弹两个模态框。
+            // 只在「跃迁」时提示：一次终态会被 onUpdate 与 onDone 各回调一次，
+            // 若只判状态码就会连弹两个模态框 / 两条通知。
+            val wasTerminal = JudgePollingService.isTerminal(entry.status?.statusCode)
             val reachedAc = status.statusCode == AC_CODE && entry.status?.statusCode != AC_CODE
+            val failedFirstTime = JudgePollingService.isTerminal(status.statusCode) &&
+                status.statusCode != AC_CODE &&
+                !wasTerminal
             entry.status = status
             val idx = entries.indexOf(entry)
             if (idx >= 0 && idx < listModel.size()) {
@@ -170,7 +175,11 @@ class LuoguToolWindow(private val project: Project) {
             if (entry === selectedEntry()) {
                 renderDetail(entry)
             }
-            if (reachedAc) AcCleanupService.promptAndCleanup(project, entry.pid)
+            if (reachedAc) {
+                AcCleanupService.promptAndCleanup(project, entry.pid)
+            } else if (failedFirstTime) {
+                JudgeNotifyService.notifyFailure(project, entry.pid, status)
+            }
         }
         SubmissionHistoryService.getInstance(project).update(rid, status)
     }
@@ -224,6 +233,17 @@ class LuoguToolWindow(private val project: Project) {
             squares.setSubtasks(emptyList())
             squaresScroll.isVisible = false
         }
+    }
+
+    /**
+     * 选中某条记录（通知里的「查看」走这里）：只改选中项，渲染复用列表监听器。
+     * 记录已被清空时静默返回。
+     */
+    fun selectSubmission(rid: String) {
+        val idx = entries.indexOfFirst { it.rid == rid }
+        if (idx < 0) return
+        historyList.selectedIndex = idx
+        historyList.ensureIndexIsVisible(idx)
     }
 
     // ---- 内部实现 ----

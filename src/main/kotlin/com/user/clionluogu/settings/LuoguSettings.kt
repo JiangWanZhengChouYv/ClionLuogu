@@ -35,6 +35,9 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
                 "    return 0;\n" +
                 "}"
             )
+
+        /** 对拍时默认用的编译参数；留空即取这个。 */
+        const val DEFAULT_COMPILER_ARGS: String = "-std=c++17 -O2 -w"
     }
 
     /** 用户自定义模板；若为 null/空则返回内置默认。 */
@@ -78,6 +81,30 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
             acCleanup = value
         }
 
+    /** 未显式设置时默认在评测判成非 AC 终态时发通知。 */
+    private var judgeNotify: Boolean? = null
+
+    var judgeNotifyEnabled: Boolean
+        get() = judgeNotify ?: true
+        set(value) {
+            judgeNotify = value
+        }
+
+    /**
+     * 对拍用的编译器**绝对路径**。留空 = 让插件按 PATH 找 `clang++`/`g++`，
+     * 再退到 IDE 发行包里自带的 MinGW（Windows）。编译器是机器级的事，所以放应用级设置。
+     */
+    var compareCompilerPath: String? = null
+
+    private var compilerArgs: String? = null
+
+    /** 编译参数；留空取 [DEFAULT_COMPILER_ARGS]。 */
+    var compareCompilerArgs: String
+        get() = compilerArgs?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPILER_ARGS
+        set(value) {
+            compilerArgs = value
+        }
+
     override fun getState(): LuoguSettings = this
 
     override fun loadState(state: LuoguSettings) {
@@ -85,5 +112,8 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
         this.punchReminder = state.punchReminder
         this.punchDay = state.punchDay
         this.acCleanup = state.acCleanup
+        this.judgeNotify = state.judgeNotify
+        this.compareCompilerPath = state.compareCompilerPath
+        this.compilerArgs = state.compilerArgs
     }
 }
