@@ -1,7 +1,8 @@
-# 开发记录：ClionLuogu 1.4.2「查看题解」
+# 开发记录：ClionLuogu 1.4.2「查看题解」+ 1.5.0「每日打卡」
 
-> 本次从克隆仓库到发版的全过程记录。版本 `1.4.2`，tag `v1.4.2`，
-> Release：https://github.com/JiangWanZhengChouYv/ClionLuogu/releases/tag/v1.4.2
+> 从克隆仓库到两次发版的全过程记录。第 1–7 节是 `1.4.2`（tag `v1.4.2`，
+> Release：https://github.com/JiangWanZhengChouYv/ClionLuogu/releases/tag/v1.4.2），
+> 第 8–10 节是 `1.5.0`（打卡）。
 
 ## 1. 需求与既定口径
 
@@ -96,3 +97,47 @@ PATH="/opt/homebrew/bin:$PATH" ./scripts/release.sh
 - 侧边栏这类窄容器里，下拉框的「还有 N 项」不可见，等于功能消失。
 - 未做/待议：`orderBy`（`weight`/`time`）排序切换未暴露给用户；`acceptSolution=false` 的题目前只如实显示服务器响应，未做前置提示；`scripts/release.sh` 的 Release 正文功能清单是写死的，功能变更时需同步。
 - **`./gradlew runIde` 不能用来测本插件**：Gradle 下载的沙箱 CLion 2024.3 缺 `com.intellij.modules.jcef`，插件因 `<depends>` 未满足而整体不加载，只会浪费时间。测插件请用 Install Plugin from Disk 装进真实 CLion。
+
+---
+
+# 追加：1.5.0「每日打卡」
+
+> 版本 `1.5.0`，tag `v1.5.0`，Release：
+> https://github.com/JiangWanZhengChouYv/ClionLuogu/releases/tag/v1.5.0
+
+## 8. 需求与立场
+
+启动时查一次「今天还能不能打卡」，不能打扰太多：**只弹 balloon 通知，必须点通知里的「打卡」按钮才发请求**；
+不做自动打卡、不做定时轮询，一次 IDE 进程最多提醒一次。手动入口按用户要求挂在**侧边栏标题栏**
+（与「清空提交记录」并排，`LuoguToolWindowFactory` 的 `setTitleActions`），不塞 Tools 菜单。
+新增：`service/PunchReminder.kt`（含 `PunchReminderActivity : ProjectActivity`）、`action/PunchNowAction.kt`
+（图标 `AllIcons.Actions.Checked`——`Ok` 这个字段不存在）、`LuoguSettings` 的 `punchReminderEnabled` / `lastPunchDate`、
+设置页第一个 `JBCheckBox`、plugin.xml 的 `<postStartupActivity>`（EP 接口确认为 `ProjectActivity`，方法是 `execute(project)`）。
+
+## 9. 打卡端点：绕了一大圈才走对
+
+1. 先按「签到」搜：SPA 的 36 条路由与 145 个 chunk 里 `签到/checkin/punch` **全部零命中** → 功能只可能在旧版首页的服务端渲染里。
+2. 抓到首页内联的 jQuery 处理函数：`$("[name=punch]").click → verify=$("[name=verify]").val() → $.post("/index/ajax_punch",{verify})`，
+   于是照它实现成 **POST + verify 令牌**。
+3. 实测打脸两次：未打卡的登录首页 `btn=1` 但 `input[name=verify]=0`；拿空 `verify=` 去 POST，服务器回
+   `{"status":400,"data":"会话超时，请刷新页面后重试"}`。中途还因正则要求属性值带引号而误判「没有令牌」
+   （首页写的是裸值 `name=punch`）。
+4. 真端点来自公开实现 `Hughpig/LuoguAutoPunch`（`gh search repos luogu` 找到）：
+   **`GET https://www.luogu.com.cn/index/ajax_punch?_=<毫秒戳>`**，只要登录 cookie + `Referer: /` + `x-requested-with`，
+   **不需要 verify、不需要验证码**。首页那个 `verify` 属于另一条带图形码的旧路径（`luogu3_pre.js` 里
+   `var verify = "<img src=\"/download/captcha\" …>"`），与打卡无关。
+5. 响应语义：`code` **200** 成功（`more.html` 是当日运势文案，剥标签后转述给用户）、
+   **201**「今天已经打过卡了」（也记 `lastPunchDate`，当天不再提醒）、**401** cookie 失效（提示重新登录）。
+   解析写成 `parsePunchResponse`：先按 JSON 取 `code`/`status`，失败再回落正则——两种信封都见过。
+6. 走对之后把错路留下的东西全删了：`VERIFY_ELEMENT_REGEX`、`VALUE_ATTR_REGEX`、`tagValue()`、
+   `PunchState.verify`、`FormBody` 导入，一个不留。
+
+## 10. 发版与教训
+
+- 发版仍走内置 `scripts/release.sh`（带 `JAVA_HOME`=CLion JBR、`HTTP(S)_PROXY`=7890）：
+  提交 `1fc7086 release: ClionLuogu 1.5.0`、`334081f chore: … points to v1.5.0`，tag 与 Release 已推，
+  `@main/updatePlugins.xml` → `version="1.5.0"`，zip HTTP 200 / 4310491 字节，jsDelivr purge `finished`。
+- **别把页面里出现的某个变量名当成协议的必需项。**首页 JS 里读 `verify`，我就假定打卡必需 verify，
+  连猜两轮判据；真正的端点是免校验的 GET。正确顺序应是先找一份能跑通的外部实现或文档，再动手写解析。
+- 用户界面位置这类事别自己发挥：下拉框、Tools 菜单两次被否，最后落在标题栏与「清空记录」并排才对。
+
