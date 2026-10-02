@@ -112,6 +112,9 @@ object SampleCompareService {
         }
 
         override fun run(indicator: ProgressIndicator) {
+            // 平台的 indicator 默认是 indeterminate，此时 setFraction 会直接抛 IllegalStateException
+            // （真 IDE 里第一次跑就死在这，离线探针跑不出来）——要报进度就得先关掉不确定态。
+            indicator.isIndeterminate = false
             val samples = request.samples
             val compile = request.compile
             if (compile != null) {

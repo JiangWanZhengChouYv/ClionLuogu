@@ -501,6 +501,83 @@ val missingSource = t.sourcePath?.let { "找不到源文件：$it" }   // 错：
 
 教训一条：凡是「可空字段表示在不在」的判断，写的时候就要顺手补一条「齐全时为 null」的断言，
 否则判反只会在界面上变成一句看起来很荒谬的假话，编译器一声不吭。
+
+## 30. 第四轮：bits 根本没机会跑——两个只在真 IDE 里炸的线程/进度问题
+
+他又报「还是不行」。先查 `idea.log`（20:29:03 加载的确实是新 1.7.0），两条栈把原因钉死了，
+**都跟 bits 无关**：编译那一步压根没被执行到。
+
+1. `java.lang.IllegalStateException at AbstractProgressIndicatorBase.setFraction`
+   ← `SampleCompareService$CompareTask.run(SampleCompareService.kt:119)`。
+   平台的 `ProgressIndicator` **默认是 indeterminate**，此时赋值 `fraction` 直接抛。
+   我进 `run()` 第一行进度就写 `indicator.fraction = 0.05`，于是任务一进去就死，
+   `onFinished()` 兜底把空结果报回面板 → 界面表现就是「什么都没跑/又变回未对拍」。
+   → `run()` 开头补 `indicator.isIndeterminate = false`。
+2. `SEVERE ThreadingAssertions - Read access is allowed from inside read-action only`
+   ← `SampleComparePanel.saveDocumentIfModified(:402)`，即 EDT 上裸调 `FileDocumentManager.getDocument(vf)`。
+   点「编译并对拍」在**保存那一步**就抛，编译自然不会发生。
+   → 整段收进**一个 `runWriteAction`**（写意图自带读意图）：`findFileByIoFile / isFileModified /
+   getDocument / saveDocument` 全放进去，并且只有真写了盘才回那句「已保存 P1001.cpp」。
+
+为什么离线 81 条断言一条都没抓到，值得记下来：
+
+- 离线探针用的是自己造的 `ProgressIndicator` 动态代理，`setFraction` 是个 no-op，永远不会抛；
+  真 IDE 走 `ProgressWindow`，indeterminate 这条规则是硬的。
+- `ThreadingAssertions` 只在有 `Application` 的 IDE 里开启，`java.awt.headless` 的裸 JVM 完全没有。
+
+结论：**进程/纯逻辑可以离线验，进度与 EDT/VFS/Document 语义只能靠真 IDE**。
+凡碰 `ProgressIndicator`、`Application`、VFS/Document 的代码，必须在真实 CLion 里点一遍才算验过。
+
+顺手把上一轮批准但还没落地的「点左侧列表结果退回未对拍」一起修了，根因同一族：
+`pidField` 的 `focusLost` 无条件 `probe()`，而**点列表正是让输入框失焦的动作** →
+`applyTarget` 又无条件 `listModel.clear()` 重建 → 一轮结果当场蒸发（切页签回来同理）。
+两层修法：① `probeIfStale()`——回车/失焦只在题号变了（或还没分析过）时才重探；
+② `applyTarget` 重建前按 `sampleIndex` 快照旧行，**同题号**时把 `verdict/summary/detail` 搬回来
+（编译行 `COMPILE_ROW` 也在快照里，要重新插回第 0 行，否则会被样例行重建挤掉），
+状态栏改显示「上次结果 · …」且**不覆盖**右侧详情；只有新一轮 `startCompare` 才显式清空。
+判据抽成 `@JvmStatic preservesResults(previousPid, currentPid)`，`UiLogicProbe` 补 3 条断言
+（同题号保留 / 改题号清空 / 首次不保留），共 10 条全绿；zip 重新构建（10-02 09:21）。
+
+「重新查找样例」在题号不变时不再清空结果是有意的：它现在的语义是**重新读盘**（补了 `.out`、
+改了编译器设置、换了当前文件），结果只有下一次「编译并对拍」才更新；新出现的编号天然还是「待对拍」。
+
+## 31. 第五轮：按用户要求撤掉 bits 兼容头，改模板
+
+他的决定很直接：**「算了，删除所有的关于 bits 的代码，拉题只有 iostream，vector，algorithm」**。
+兼容头那套（探测 + 释放 + `-isystem` 注入）本质是在替用户兜住一个坏习惯，多一个子进程、多一条注入路径、
+多一类「兼容头自己缺项」的风险；不如让模板直接写真实存在的头。
+
+删掉的：`resources/compat/bits/stdc++.h`（305 行）、`CompilerService` 里的 `SHIM_RESOURCE` /
+`probeBits()` / `needsBitsShim()` / `ensureShimDir()` / `bitsProbeCache` / `Outcome.shimInjected`、
+面板详情区那句「兼容头：已注入…」、`createTempDir()`（唯一使用者没了，一并删）。
+`compile()` 现在就是 `<compiler> <设置参数> -o <产物> <源文件>`，少一次子进程，编译从 428 ms 降到 **328 ms**。
+
+新 `DEFAULT_CODE_TEMPLATE`：21 个真实标准头（`algorithm bitset climits cmath cstdio cstdlib cstring
+deque functional iomanip iostream map numeric queue set stack string unordered_map unordered_set utility vector`），
+**逐个用 `clang++ -fsyntax-only -include <头>` 实测过在 libc++ 上都在**（`climit`、`scoped_lock`、`malloc.h`
+这类「看着像其实没有」的名没进来），`using namespace std;` + `main` 骨架不变。
+`ProblemFileGenService` 取的就是 `settings.codeTemplate`，所以只在用户没自定义模板时生效——自定义过 bits 的仍按他自己的。
+
+老文件不能不管：项目里已经存在的 `Pxxx.cpp` 第一行就是 bits。现在不塞兼容头，本地必然
+`fatal error: 'bits/stdc++.h' file not found`。所以 `compile()` 里加一句 `withBitsHint()`：
+诊断文本一出现 `bits/stdc++.h` 就在末尾补一段可操作的说明（换成哪些头、新模板已经改了）。
+探针里对应的断言从「shim 注入成功」换成两条更值钱的：
+**「插件默认模板原样编过」**（拿 `LuoguSettings.DEFAULT_CODE_TEMPLATE` 真编一遍）和
+**「老文件留 bits 会失败，且诊断里带那句提示」**。
+
+### 我自己这轮写坏了一次文件，记下来
+
+改 `plugin.xml` 的措辞时用 python `s.find(...)` 定位结尾锚点，锚点字面写错返回 **-1**，
+`s[:i] + new + s[-1:]` 直接把 change-notes 之后的 `<depends>`、扩展点、`<actions>`、闭合标签**全截没了**
+（84 行变成 23 行）。编译期没人报错，是 `wc -l` + `tail -2` 一眼看出来的。
+处理：`git checkout -- plugin.xml` 回到提交版本（这轮未提交改动只有措辞，正好重写），
+再用 Edit 工具按精确字符串分两处替换。教训：**改文件别用「找索引再切片」，用带精确上下文的编辑工具；
+真要脚本改，`find` 返回 -1 必须当场退出**，以及批量文本改完之后要立刻验证结构（行数、闭合标签、条目数）。
+
+离线断言 86 条全绿（25 编译链路 + 10 UI 判据 + 39 纯逻辑 + 12 进程），
+其中 25 条是拿**发布包里的 jar** 跑的，顺带确认 `compat/` 已经从 jar 里消失（`grep -c compat` = 0）。
+zip 重新构建于 09:46。README / `plugin.xml` description + change-notes / `release.sh` 三处措辞同步改掉，
+已知限制新增一条明说「bits 不做兼容，老文件自己换头」。
 另注：他那项目里 `P1001` 只有 1 组成对样例，所以列表里就 1 组，不是漏了。
 
 

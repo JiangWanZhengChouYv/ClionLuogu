@@ -86,6 +86,9 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     /** 本轮该跑几组：中途停止时用它区分「全过」与「已跑的都过」。 */
     private var expectedGroups = 0
 
+    /** 上一轮跑完的汇总。重新探测（切页签、点列表）不算新一轮，得把它继续显示出来。 */
+    private var lastSummary: String? = null
+
     /** 编译产物目录：每个窗口一份，退出即删。不放项目根，避免污染仓库或被 AC 清理误删。 */
     private val buildDir: File by lazy {
         runCatching { Files.createTempDirectory("clionluogu-compare").toFile() }
@@ -179,10 +182,11 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         add(bottom, BorderLayout.SOUTH)
 
         reprobeButton.addActionListener { probe() }
-        pidField.addActionListener { probe() }
-        // 输完题号点个地方就开始分析，不必再回去按「重新查找」
+        pidField.addActionListener { probeIfStale() }
+        // 输完题号点个地方就开始分析。但**点列表也会让输入框失焦**，
+        // 所以只在题号真的变了时才重探，否则一轮结果会被这次探测清光。
         pidField.addFocusListener(object : FocusAdapter() {
-            override fun focusLost(e: FocusEvent) = probe()
+            override fun focusLost(e: FocusEvent) = probeIfStale()
         })
         pickCompilerButton.addActionListener { pickCompiler() }
         startButton.addActionListener { startCompare() }
@@ -238,38 +242,70 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         )
     }
 
+    /** 输入框失焦 / 回车：只有题号变了（或还没分析过）才重探，否则会把跑完的结果清掉。 */
+    private fun probeIfStale() {
+        syncPidFromEditor()
+        if (target == null || !preservesResults(targetPid, currentPid())) probe()
+    }
+
     private fun applyTarget(pid: String, t: CompareTarget) {
+        // 同一题号下的重新探测（点列表、切页签、「重新查找样例」）不算新一轮：
+        // 先把旧行快照下来，重建时把判定与详情原样搬回来。
+        val previous = HashMap<Int, Row>()
+        if (preservesResults(targetPid, pid)) {
+            for (i in 0 until listModel.size()) {
+                val row = listModel.elementAt(i)
+                previous[row.sampleIndex] = row
+            }
+        }
         target = t
         targetPid = pid
         updateCompilerLabel(t)
 
         listModel.clear()
+        previous[COMPILE_ROW]?.let { listModel.addElement(it) }
+        fun addRow(index: Int, title: String, summary: String, detail: String) {
+            val row = Row(index, title, null, summary, detail)
+            previous[index]?.takeIf { it.verdict != null }?.let { kept ->
+                row.verdict = kept.verdict
+                row.summary = kept.summary
+                row.detail = kept.detail
+            }
+            listModel.addElement(row)
+        }
         t.samples?.let { found ->
             found.samples.forEach { sample ->
-                listModel.addElement(Row(sample.index, "样例 ${sample.index}", null, "待对拍", pendingDetail(sample)))
+                addRow(sample.index, "样例 ${sample.index}", "待对拍", pendingDetail(sample))
             }
             found.orphanInputIndexes.forEach { n ->
-                listModel.addElement(
-                    Row(
-                        n,
-                        "样例 $n",
-                        null,
-                        "缺少期望输出",
-                        "样例 $n\n\n这一组只有输入没有期望输出，不会参与对拍。\n" +
-                            "现有文件：${pid}_${n}.in\n补上 ${pid}_${n}.out 后点「重新查找样例」。",
-                    ),
+                addRow(
+                    n,
+                    "样例 $n",
+                    "缺少期望输出",
+                    "样例 $n\n\n这一组只有输入没有期望输出，不会参与对拍。\n" +
+                        "现有文件：${pid}_${n}.in\n补上 ${pid}_${n}.out 后点「重新查找样例」。",
                 )
             }
         }
 
         val blocked = blockingReason(pid, t, project.basePath)
         fetchButton.isVisible = t.samples?.let { !it.dirExists } == true
-        if (blocked != null) {
-            statusLabel.text = blocked.short
-            detailArea.text = blocked.detail
-        } else {
-            statusLabel.text = "共 ${t.samples?.samples?.size ?: 0} 组样例，可以开始编译对拍"
-            detailArea.text = introText(pid, t)
+        val hasResults = (0 until listModel.size()).any { listModel.elementAt(it).verdict != null }
+        when {
+            blocked != null -> {
+                statusLabel.text = blocked.short
+                detailArea.text = blocked.detail
+            }
+
+            hasResults && lastSummary != null -> {
+                // 结果还在就别动详情：用户可能正盯着某个「第 N 行不同」
+                statusLabel.text = "上次结果 · $lastSummary"
+            }
+
+            else -> {
+                statusLabel.text = "共 ${t.samples?.samples?.size ?: 0} 组样例，可以开始编译对拍"
+                detailArea.text = introText(pid, t)
+            }
         }
         startButton.isEnabled = blocked == null && !running
     }
@@ -366,11 +402,22 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
         running = true
         expectedGroups = samples.size
+        lastSummary = null
         startButton.isEnabled = false
         stopButton.isEnabled = true
         fetchButton.isVisible = false
         statusLabel.text = listOfNotNull(savedNote, "编译中…").joinToString(" ")
         detailArea.text = ""
+        // 新一轮开始：先把上一轮的判定清掉，否则跑的过程中新旧混着看不出是哪一轮
+        for (i in 0 until listModel.size()) {
+            val row = listModel.elementAt(i)
+            if (row.sampleIndex != COMPILE_ROW && row.verdict != null) {
+                row.verdict = null
+                row.summary = "待对拍"
+                row.detail = "样例 ${row.sampleIndex}\n\n本轮还没跑到。"
+                listModel.set(i, row)
+            }
+        }
 
         val output = File(buildDir, outputName(pid))
         val request = SampleCompareService.Request(
@@ -394,14 +441,25 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         )
     }
 
-    /** 编辑器里那份没保存就先写盘；真的写了才回一句给用户看。 */
+    /**
+     * 编辑器里那份没保存就先写盘；真的写了才回一句给用户看。
+     *
+     * `getDocument` 要读权限、`saveDocument` 要写权限，所以整段放进**一个 write action**
+     * （写意图自带读意图）。之前在 EDT 上裸调 `getDocument` 会被平台的线程断言拦下
+     * （`Read access is allowed from inside read-action only`），2026.2 的 idea.log 里就是这样。
+     */
     private fun saveDocumentIfModified(file: File): String? {
-        val vf = runCatching { LocalFileSystem.getInstance().findFileByIoFile(file) }.getOrNull() ?: return null
         val manager = FileDocumentManager.getInstance()
-        if (!manager.isFileModified(vf)) return null
-        val document = manager.getDocument(vf) ?: return null
-        ApplicationManager.getApplication().runWriteAction { manager.saveDocument(document) }
-        return "已保存 ${vf.name}，"
+        var saved: String? = null
+        ApplicationManager.getApplication().runWriteAction {
+            val vf = runCatching { LocalFileSystem.getInstance().findFileByIoFile(file) }.getOrNull()
+                ?: return@runWriteAction
+            if (!manager.isFileModified(vf)) return@runWriteAction
+            val document = manager.getDocument(vf) ?: return@runWriteAction
+            manager.saveDocument(document)
+            saved = vf.name
+        }
+        return saved?.let { "已保存 $it，" }
     }
 
     private fun insertCompileRow() {
@@ -459,7 +517,8 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
                 row.detail = "样例 ${row.sampleIndex}\n\n没跑：编译那一行报了错，先看第一行的诊断。"
                 listModel.set(i, row)
             }
-            statusLabel.text = "编译失败，点第一行看诊断"
+            lastSummary = "编译失败，点第一行看诊断"
+            statusLabel.text = lastSummary
             resultList.selectedIndex = compileIndex ?: 0
             detailArea.text = compileDetail(compile)
             return
@@ -480,12 +539,14 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         if (failedIndex != null) resultList.selectedIndex = failedIndex
 
         val stopped = expectedGroups > report.results.size
-        statusLabel.text = when {
+        val summary = when {
             report.ranCount == 0 -> "已停止，没有跑完任何一组"
             report.allPassed && !stopped -> "${report.passedCount} 组全部通过，可以提交了"
             report.allPassed -> "已跑的 ${report.results.size}/$expectedGroups 组都通过（中途停止）"
             else -> "${report.passedCount}/${report.results.size} 组通过，已选中首个失败组"
         }
+        lastSummary = summary
+        statusLabel.text = summary
         if (failedIndex == null && report.results.isNotEmpty()) {
             detailArea.text = report.results.joinToString("\n\n") { r ->
                 "样例 ${r.sample.index} · ${verdictText(r.verdict)} · ${r.elapsedMs} ms"
@@ -501,13 +562,6 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             append('\n')
             append("编译器：").append(target?.compiler?.file?.absolutePath ?: "?").append('\n')
             append("命令：").append(compile.commandLine).append('\n')
-            append(
-                if (compile.shimInjected) {
-                    "兼容头：已注入 bits/stdc++.h（该编译器原生没有；洛谷评测机是 g++，自带）\n"
-                } else {
-                    "兼容头：未注入（该编译器原生支持 bits/stdc++.h）\n"
-                },
-            )
             if (compile.diagnostic.isNotBlank()) {
                 append("\n—— 编译器输出 ——\n").append(compile.diagnostic)
             } else if (compile.ok) {
@@ -576,6 +630,10 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     companion object {
         /** 列表里代表「编译本身」那一行的编号（样例编号从 1 起，不会撞）。 */
         private const val COMPILE_ROW = 0
+
+        @JvmStatic
+        fun preservesResults(previousPid: String?, currentPid: String): Boolean =
+            previousPid != null && previousPid == currentPid
 
         /**
          * 「还不能开始」的原因；返回 null 表示可以开始。

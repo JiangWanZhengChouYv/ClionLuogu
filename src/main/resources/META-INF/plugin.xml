@@ -9,7 +9,7 @@
   <li>搜索题目，双击结果即可预览题面（LaTeX 公式与图片）</li>
   <li>预览页可切换到「题解」：分页拉取该题洛谷题解，逐篇渲染（同样走内置 MathJax）</li>
   <li>一键提交当前代码，自动轮询评测结果</li>
-  <li>本地对拍：现场编译 <code>Pxxx.cpp</code> 再逐组跑落盘样例，指出首个差异行；macOS 缺 <code>bits/stdc++.h</code> 由内置兼容头兜底</li>
+  <li>本地对拍：现场编译 <code>Pxxx.cpp</code> 再逐组跑落盘样例，指出首个差异行；默认模板用真实标准头，不依赖 <code>bits/stdc++.h</code></li>
   <li>评测判为非 AC 终态（WA / RE / TLE / MLE / CE）时发通知，点「查看」直接跳到该条记录</li>
   <li>评测详情按子任务展示逐测试点彩色方块（悬停看耗时 / 内存）</li>
   <li>提交记录按项目持久化（含源码），可查看 / 复制当次代码</li>
@@ -21,7 +21,7 @@
 
     <change-notes><![CDATA[
 <ul>
-  <li><b>1.7.0</b>：新增<b>「对拍」页签</b>——点一下先<b>现场编译</b>项目根的 <code>Pxxx.cpp</code>，再把拉题落盘的 <code>Pxxx_samples/Pxxx_N.in</code> 逐组喂进去与 <code>.out</code> 比对；不一致时给出首个差异行与两侧上下文、退出码与 stderr，判定颜色与「评测」页一致（通过绿 / 不通过红 / RE 紫 / TLE 蓝 / 编译错红）。编译器按 PATH 找 <code>clang++</code> / <code>g++</code> / <code>c++</code>，Windows 还会看 IDE 自带的 MinGW，设置里可填绝对路径覆盖；<b>macOS 的 Apple clang 没有 <code>bits/stdc++.h</code></b>（实测 <code>fatal error: file not found</code>），插件内置一份兼容头，仅在探测到编译器原生没有时才注入。编辑器里那份没保存会先保存再编，产物写在系统临时目录、不进你的仓库，也不需要先手动 Build。同时新增<b>评测未通过通知</b>：判成非 AC 终态（WA / RE / TLE / MLE / CE…）时发一条 balloon，点「查看」跳到评测页并选中该条记录；AC 仍只弹 1.6.0 的清理询问，不叠加通知。开关与编译器、编译参数都在 <code>Settings | Tools | 洛谷拉题</code>。两个做不到的：不复用你项目里的 CMake 配置（自定义宏、多文件、第三方库会报编译或链接错），不做特殊判定（SPJ）题的比较</li>
+  <li><b>1.7.0</b>：新增<b>「对拍」页签</b>——点一下先<b>现场编译</b>项目根的 <code>Pxxx.cpp</code>，再把拉题落盘的 <code>Pxxx_samples/Pxxx_N.in</code> 逐组喂进去与 <code>.out</code> 比对；不一致时给出首个差异行与两侧上下文、退出码与 stderr，判定颜色与「评测」页一致（通过绿 / 不通过红 / RE 紫 / TLE 蓝 / 编译错红）。编译器按 PATH 找 <code>clang++</code> / <code>g++</code> / <code>c++</code>，Windows 还会看 IDE 自带的 MinGW，设置里可填绝对路径覆盖；<b>默认模板不再依赖 <code>bits/stdc++.h</code></b>（macOS 的 clang + libc++ 根本没有那个头，实测 <code>fatal error: file not found</code>），改成 <code>&lt;iostream&gt;</code>、<code>&lt;vector&gt;</code>、<code>&lt;algorithm&gt;</code> 等两边都有的真实标准头——已经拉下来的老文件若第一行还写着 bits，本地编译会失败并在诊断里提示怎么改。编辑器里那份没保存会先保存再编，产物写在系统临时目录、不进你的仓库，也不需要先手动 Build。同时新增<b>评测未通过通知</b>：判成非 AC 终态（WA / RE / TLE / MLE / CE…）时发一条 balloon，点「查看」跳到评测页并选中该条记录；AC 仍只弹 1.6.0 的清理询问，不叠加通知。开关与编译器、编译参数都在 <code>Settings | Tools | 洛谷拉题</code>。两个做不到的：不复用你项目里的 CMake 配置（自定义宏、多文件、第三方库会报编译或链接错），不做特殊判定（SPJ）题的比较</li>
   <li><b>1.6.0</b>：题目 AC 后弹窗询问是否删除本题生成的文件——<code>Pxxx.cpp</code>、<code>Pxxx.md</code> 与 <code>Pxxx_samples/</code>（含其中全部 <code>.in/.out</code>）。只认项目根下这三个精确名字，改过名或放进子目录的文件不会被碰；弹窗列出实际存在的待删项，确认后一并丢弃编辑器里未保存的修改；提交记录不受影响。不想要提醒可在 <code>Settings | Tools | 洛谷拉题</code> 关掉</li>
   <li><b>1.5.0</b>：新增洛谷「每日打卡」提醒——启动时查一次今日是否还能打卡，未打卡只发一条 balloon 通知，<b>点了通知里的「打卡」按钮才发请求</b>（不做自动打卡、不做定时轮询，一次启动最多提醒一次）；手动入口做在侧边栏标题栏（「清空提交记录」旁边），设置页加了提醒开关。打卡走旧版首页那条 <code>GET /index/ajax_punch</code>，不需要验证码；是否已打卡由首页有没有 <code>[name=punch]</code> 按钮判断，服务器返回 201「今天已经打过卡了」时也会安静记下，当天不再提醒</li>
   <li><b>1.4.2</b>：预览页新增「题解」模式——按题号分页拉取洛谷题解，已加载的题解以<b>可见列表</b>平铺在正文上方（点一条看一篇，「加载更多」翻下一页），正文按 <b>Markdown</b> 渲染（内置 marked.js + MathJax 公式，先保护公式再解析，并剥除脚本与内联事件）；「拉取」「搜索」页均可一键跳到该题题解。题解接口需登录态（未登录时洛谷返回 401）；失败时给出 HTTP 状态码与凭据诊断（只报 __client_id 长度，不含其值），不再笼统提示登录、也不再静默显示「该题暂无题解」</li>
