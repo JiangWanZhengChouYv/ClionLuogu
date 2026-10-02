@@ -977,9 +977,25 @@ object LuoguApiService {
             memoryKb = recordBlock?.asLong("memory"),
             subtaskInfo = subtasks,
             subtaskResults = parseSubtaskResults(recordBlock),
-            compileError = recordBlock?.get("compileErrorMessage")
-                ?.let { it as? JsonPrimitive }?.content?.trim()?.ifBlank { null },
+            compileError = parseCompileError(recordBlock),
         )
+    }
+
+    /**
+     * 编译错误详情。实测在 **`record.detail.compileResult.message`**（洛谷前端也是读这个路径），
+     * 顶层 `record.compileErrorMessage` 那种字段根本不存在——以前这里恒为 null，
+     * 于是评测页的「跳到出错行」从来没亮过。留几种形态兜底，命中即用。
+     */
+    private fun parseCompileError(record: JsonObject?): String? {
+        if (record == null) return null
+        val detail = record["detail"] as? JsonObject
+        return listOfNotNull(
+            (detail?.get("compileResult") as? JsonObject)?.asString("message"),
+            detail?.asString("compileError"),
+            (record["compileResult"] as? JsonObject)?.asString("message"),
+            record.asString("compileErrorMessage"),
+            record.asString("compileError"),
+        ).firstOrNull()
     }
 
     /**

@@ -2,7 +2,9 @@ package com.user.clionluogu.service
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.user.clionluogu.api.LuoguApiException
 import com.user.clionluogu.api.LuoguApiService
@@ -354,6 +356,28 @@ object LuoguActions {
                 )
             }
         }
+    }
+
+    /**
+     * 打开项目根的 `Pxxx.cpp` 并把光标定位到 [line] / [column]（**1-based**，与编译器输出一致）。
+     *
+     * 只按 pid 拼本地路径，绝不打开诊断里写的那个路径：洛谷那边是它服务器上的临时文件名。
+     * 1-based → 0-based 只在这里换算一次。文件不在（改过名、挪进子目录）返回 false，
+     * 由调用方把按钮置灰，不弹「文件不存在」这种马后炮。
+     */
+    fun openProblemFile(project: Project, pid: String, line: Int, column: Int): Boolean {
+        val base = project.basePath ?: return false
+        val vf = LocalFileSystem.getInstance().findFileByPath(File(base, "$pid.cpp").path) ?: return false
+        // VirtualFile 没有 isFile，只有 isDirectory（目录同名时也别跳）
+        if (vf.isDirectory) return false
+        OpenFileDescriptor(project, vf, (line - 1).coerceAtLeast(0), (column - 1).coerceAtLeast(0)).navigate(true)
+        return true
+    }
+
+    /** 项目根下这道题的源文件是否存在。跳行按钮的闸门，须在 EDT 或线程安全场景下调用。 */
+    fun hasLocalSource(project: Project, pid: String): Boolean {
+        val base = project.basePath ?: return false
+        return runCatching { File(base, "$pid.cpp").isFile }.getOrDefault(false)
     }
 
     /** 把回调切回 EDT 执行。 */

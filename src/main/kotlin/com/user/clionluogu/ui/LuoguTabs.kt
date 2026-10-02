@@ -16,6 +16,7 @@ object LuoguTabs {
     const val TAB_PREVIEW = "预览"
     const val TAB_SUBMIT = "提交"
     const val TAB_COMPARE = "对拍"
+    const val TAB_PROBLEMS = "题目"
     const val TAB_LOGIN = "登录"
     const val TAB_ACCOUNT = "账号"
 

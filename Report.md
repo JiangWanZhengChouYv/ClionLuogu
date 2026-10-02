@@ -665,4 +665,220 @@ UI 字体里数字是等宽的，所以不依赖等宽字体也能对齐成一�
 拖宽有没有换回来；失败行点「存反例」后 Project 视图里能不能立刻看到 `Pxxx_cases/`；
 勾「只看失败」时通过组有没有正确消失、编译失败时是不是只剩编译那一行。
 
+## 34. 1.7.2：跳行、总分、题库索引与删除题目
+
+四件事都来自「刷完题这一圈」的体感缺口：CE 诊断写着行号却要人手数；非 AC 时看不出拿了
+多少分（得一行行悬停方块）；1.6.0 的 AC 清理只在变绿那一瞬问一次，错过就只能去 Finder
+手删，而 1.7.1 新加的 `Pxxx_cases/` 还不在它的口径里。第三条做成了**第 8 个页签「题目」**
+（插在「对拍」之后、「登录」之前），顺手把删除从「AC 才问」变成「随时能点」。
+
+### 跳行：白名单，而且永远不开诊断里那个路径
+
+`service/CompileErrorLocator.kt` 只做纯文本解析，四个 `@JvmStatic` 函数都能离线断言。
+几处刻意的设计：
+
+- **白名单而不是黑名单**。诊断里大量行号指向标准库内部（`<vector>` 第 572 行、
+  `bits/stl_vector.h`），跳过去没意义还会误导。本来打算维护一份系统目录黑名单，
+  后来发现 basename 白名单（`[A-Za-z]{1,4}\d{1,5}|main` + 源码后缀）已经足够严——
+  `vector`、`stl_vector.h`、`stdc++.h` 都过不了它，而黑名单反而会误伤真放在
+  `include/` 目录下的自己的文件（探针各有一条）。
+- **要打开的文件由 pid 拼出来**（`LuoguActions.openProblemFile` → 项目根 `Pxxx.cpp`），
+  绝不去开诊断里写的那个路径：洛谷那边是它服务器上的临时名（`Main.cpp`），
+  拿它当本地路径既不合法也不安全。白名单只用来判断「这一条错误是不是在我自己那份代码里」。
+- **1-based 只换算一次**：`CompileHit.line` 一路都是 1-based（与编译器输出、探针断言同口径），
+  只有 `openProblemFile` 里 `line - 1` 交给 `OpenFileDescriptor`。差一 bug 只能有一个藏身处。
+- 三道闸门，任一不过就不给按钮：解析不出 / 行号超出**当次提交的代码行数**（宏展开与模板
+  实例化会指到本地根本没有的行）/ 本地 `Pxxx.cpp` 不在（改过名、挪进子目录）。
+- 每行先 `trim()`：`withRedirectErrorStream(true)` 合流出来的可能是 CRLF，行尾留 `'\r'`
+  时 `$` 锚匹配不上，症状是「明明有 error 却点不出按钮」。`note:` 行直接丢（clang 用它指
+  宏展开处）。优先第一条 `error`，全无 error 才退到 `warning`。
+- **两段式兜底只在三段式没中时才试**。若顺序反了，`P1001.cpp:12:5: error:` 会被
+  `^(.+?):(\d+):\s*(error|warning):` 匹配成「第 5 行」——非贪婪的 path 段会把 `:12` 吞进去。
+
+不做「点文本区直接跳」：详情区是 `isFocusable = false` 的换行 `JTextArea`，鼠标事件拿不稳；
+显式按钮还能禁用、还能在 tooltip 里说清楚为什么不能点。
+
+### 他先撞到了一个真 bug：评测页的按钮常年是灰的
+
+他一测就报「提交错误代码，评测页即使在正常位置按钮也是灰的」。这次不用猜，也不用他贴日志 ——
+评测记录就落在他项目的 `.idea/clionluoguHistory.xml` 里，直接读那份文件就能看到根因：
+**`Record` 里压根没有 `compileError` 这个字段**（option 名清单：code / id / lang / memoryKb / pid /
+rid / score / status / statusCode / submitTime / subtasks / testCases / timeMs），
+最后一条记录是 `pid=P1001 status=2 subtasks=0`。也就是说：
+
+- 编译错误详情只活在内存里那一轮，**重启 IDE 就丢**；重启后 `toStatus()` 还原不出 CE 文本，
+  `parseAll` 自然什么都解析不到 → 按钮恒灰，而且灰得没有理由；
+- 顺带暴露第二条：**评测没跑完就重启，记录会永远停在「进行中」**，之后再也不会自己刷新。
+
+三处一起修：
+
+1. `Record` 加 `compileError` 字段，并在 `getState()` 的深拷贝、`update()` 的写回、以及还原侧
+   三处同步（这正是历史上咬过三次的「加了新字段忘了镜像」那一类）。
+2. 还原逻辑从 `LuoguToolWindow` 里的私有扩展搬成公开的 `storage/RecordRestore.kt`——
+   私有文件级函数探针调不到，而这条 round-trip（`add → getState → loadState → toStatus`）恰恰是最该被断言的。
+3. `refreshUnfinished()`：加载历史后把非终态的记录补轮询一次，带 `quiet = true`——
+   那是**过期的跃迁**，再弹 AC 清理模态框或失败通知会很莫名其妙，只把数据刷回来。
+
+再把「灰」变成「可诊断」：`CompileErrorLocator.choose()` 返回 `JumpChoice(hit, miss, detail)`，
+六道闸门各有原因（没本地文件 / 没诊断文本 / 文本里没有位置 / 指向的是标准库 / 行号超出当次代码长度 / 成功），
+`missText()` 翻成 tooltip，FOREIGN_FILE 与超范围还带上具体值（`vector:572`、`57/30`）——
+下次再灰，鼠标移上去就知道该改哪。探针里对应 10 条原因断言 + 6 条持久化断言，
+其中一条是端到端：从他那种记录形状（`statusCode=-1` + `Main.cpp:5:14: error` + 6 行代码）
+还原出状态、再喂给 `choose()`，必须给出第 5 行。
+
+### 但持久化只是其中一半：CE 详情的字段名本来就是错的
+
+他装上新版再测，按钮**还是灰的**，tooltip 说的是「没有诊断文本可解析」。所以持久化那条确实是缺口，
+却不是他这个症状的根因 —— **`compileError` 从来没被填上过**，评测页那块「—— 编译错误 ——」一直是空的，
+只是以前没有跳行按钮，没人发现。
+
+这次不猜字段名。`gh api search/code` 搜到 NB-Group/GuluGulu（还在维护的洛谷浏览器扩展），
+它的 `src/contentScripts/views/Record/Record.vue` 读的正是同一个 `?_contentOnly=1` 数据源，里面写得很直白：
+CE 面板取 `data.record.detail.compileResult.message`，并且专门有个兜底提示
+「评测返回 CE 但编译器输出没带回」——说明这种记录真存在。
+
+于是 `parseCompileError` 改成多路径命中、拿到即用：`record.detail.compileResult.message` →
+`record.detail.compileError` → `record.compileResult.message` → 原来那两个顶层字段仍留着当兜底。
+这与逐测试点明细早就验证过的层级（`record.detail.judgeResult.subtasks`）同级，说得通。
+
+一条**我没照抄**的分歧：GuluGulu 注释说 `record.status` 不可靠、`2` 是 Compiling、CE 是 `10`；
+我们的 `statusTextOf` 把 `2` 标成「编译错误 (CE)」。他自己的数据更支持后者 —— 那条**故意**写坏的提交
+落盘就是 `statusCode=2`。所以那张表不动，只把「状态说是 CE、记录里却没详情」的行也纳入启动补拉
+（`refreshUnfinished` 的第二类，上限 8 条）：不管它叫 2 还是 10，重新拉一次，拉回来就存下、按钮就亮。
+
+NO_DIAGNOSTIC 那句 tooltip 也改成实话：「这条记录里没有编译错误详情（1.7.2 之前没存这个字段，
+重新提交一次即可；洛谷偶尔也不返回编译器输出）」。
+
+**这块离线验不到的东西要说清**：字段路径对不对，只有真连洛谷才知道（`parseCompileError` 是私有的，
+`getSubmissionStatus` 要发请求带登录态），探针能守的只是「拿到文本之后的一切」。
+所以他这一测不是走过场。
+
+### 第三轮：文本拿到了，但解析器只认英文
+
+他再测，tooltip 变成「诊断里没解析出位置信息」——说明字段路径对了（文本进来了），卡在 `parseAll`。
+这句原因本身就是一条线索：**灰在 `NO_LOCATION` 而不是 `FOREIGN_FILE`，意味着连
+`^(.+?):(\d+):(\d+):\s*(error|warning):` 这个形状都没匹配上**，差的不是文件名白名单，
+而是分隔符或级别词本身。最可能是评测机跑在中文 locale 的 g++：
+
+```
+Main.cpp: 在函数 'int main()' 中:
+Main.cpp:12:12: 错误：‘foo’ 在此作用域中尚未声明
+```
+
+于是两个正则的分隔符改成 `[:：]`（半角全角都吃）、级别词扩到 `error|warning|错误|警告`，
+前缀组加 `致命`（中文 clang 的「致命错误」是一个词、中间没空格，`fatal\s+` 匹配不到），
+`isError` 相应改成「关键字 ∈ {error, 错误} 或带了致命前缀」。
+
+再补一条**下次不必再来一轮**的机制：`NO_LOCATION` 现在把最可疑的那行原样带进 tooltip
+（优先含数字的行 —— `Main.cpp: 在函数…` 这种噪音行带回去没有信息量），
+格式再对不上就直接看得见差在哪。探针相应加了 10 条（中文「错误」/ 中文「致命错误」/ 全角冒号 /
+中文警告与错误混排仍优先错误 / 中文两段式无列号 / 样本挑带数字那行 …）。
+
+**诚实记下代价**：这一条仍是按 locale 推的，不是我实测到的洛谷输出（我没有他的登录态，
+游客抓 `?_contentOnly=1` 会 302）。稳妥之处是**兼容两种写法而不是替换**，所以猜错也不会
+把原本能解析的英文格式弄坏 —— 这是「猜」与「赌」的差别。
+
+### 第四轮：他贴了截图，一轮收敛。原因是文件名没有扩展名
+
+tooltip 变成「诊断指向的是 src:12，不是你自己那份提交」，外加一张截图，真实诊断长这样：
+
+```
+/tmp/compiler_lik1oiiu/src: In function 'int main()':
+/tmp/compiler_lik1oiiu/src:12:22: 错误：‘edl’在此作用域中尚未声明
+     12 |     cout << a + b << edl;
+        |                      ^~~
+```
+
+三件事一次全确认：中文 locale 与全角冒号**猜对了**（能走到 `FOREIGN_FILE` 就说明正则已经命中），
+噪音行 `…: In function …` 没被误收，而白名单错在——**洛谷把源码编成 `/tmp/compiler_lik1oiiu/src`，
+文件名根本没有扩展名**，我那份只认带后缀的 `P1001.cpp` / `Main.cpp`。
+修法：加一组无扩展名的提交文件名 `src` / `main` / `program` / `submission`（标准库的
+`vector`、`stl_vector.h`、`basic_string.h` 都不在其中，白名单该拦的仍然拦得住），
+并把这段真实诊断原样写进探针当回归（6 条，含「只出 1 条」「= 第 12 行第 22 列」「大写 SRC 也过」）。
+
+**这一轮值得记的是方法**：前三次之所以要猜，是因为「灰」这个状态什么都不说。
+把六道闸门各自的原因（外加最可疑那行的原文）搬到 tooltip 上之后，他一悬停就看到了
+`src:12`，我一次就改对了 —— 自诊断把「再来一轮」变成了「一轮收敛」。
+
+### 总分：拿不准就一个字符都不显示
+
+`service/ScoreTotals.kt`。**空列表或任一子任务 `score == null`（评测进行中）→ null → UI 什么都不加**；
+`0` 是合法值（全 WA 也要显示 0 分）。这条口径比功能本身重要：「AC  0 分」是看着像真话的假话。
+
+不带 `/满分`——`fullScore` 只在题目 DTO（`api/dto.kt:26`）上，提交记录里根本没这个字段，硬凑只会显示 0。
+只有 `subtaskInfo` 文本时从文本兜底（`#1: 40分`），半角与全角冒号都吃，**任一行不合式就整体返回 null**。
+取值顺序（明细优先、退化到文本）收在 `totalScoreOf(status)` 一个函数里，评测页和未通过通知共用——
+这种「两个地方各自 if 一遍」的东西最容易日后走岔。
+
+### 题库索引与删除：列出即可删
+
+`service/ProblemIndexService.kt` 只看**项目根一层**、只用 `java.io`：与 `AcCleanupService` 的删除
+口径同源，且反映磁盘现状（他可能在 IDE 外面动过手），也省掉 `VirtualFile` 的读动作要求。
+后缀四类（`.cpp` / `.md` / `_samples` / `_cases`）之外一律不进索引 —— 一个不可逆的删除功能
+不该有「大概匹配」。**类型也要对**：`P88_samples` 如果是个文件而不是目录，既不进索引也不删。
+探针里有一条集合相等断言：`presentNames()`（索引说有的）与 `targetNames(pid)` 里真实存在的
+（删除能删的）必须是同一批名字——这两个口径一旦分叉，就会出现「列出来却删不掉」。
+`_samples` / `_cases` 两个字面量还各自断言等于 `SampleSetService.samplesDirName` /
+`CaseExportService.casesDirName`，防止以后改了落盘名而索引悄悄失灵。
+
+`SubmissionHistoryService.latestFor(pid)` 用 `lastOrNull`（记录按追加顺序存，最后一条才是当前状态），
+忽略大小写。
+
+删除部分把 `AcCleanupService` 拆开：`targetNames` / `targetsOf` / `listingOf` / `deleteOrder` /
+`confirmAndDelete(project, pid, onDone)`，AC 自动清理与手动删除走同一内核，
+**并且把 `Pxxx_cases/` 也纳进 AC 清理**（于是 README、`plugin.xml`、`LuoguConfigurable`、
+`release.sh` 四处措辞一起改）。原来那句 `children.filter { !it.isDirectory } + target` 只脱一层，
+多了 `_cases` 嵌套就不够用，改成**递归后序**。
+
+`deleteOrder` 的真身搬到了 `service/DeleteOrder.kt`，做成 `orderOf(targets, isDir, childrenOf, maxDepth)`
+的泛型内核：`VirtualFile` 要起 IDE 才拿得到，而「子项在前、目录在后」这个判据必须能离线跑
+（`VirtualFile.delete()` 删不掉非空目录）。`AcCleanupService.deleteOrder` 只是把三个访问器传进去，
+走的是同一份代码，探针于是能拿真 `File` 树验后序与深度截断。
+**超过 `maxDepth` 的目录不深入，只把目录本身排队**——它删除时因非空失败，于是「N 项失败」如实报出来，
+而不是静默留一地孤儿文件。
+
+确认框是唯一闸门：`confirmAndDelete` **不看** `acCleanupEnabled`（那个开关管的是「要不要主动问」，
+不是「能不能删」），但也必须他点过「删除本题文件」才会走到这里。提交记录与评测历史永不碰，
+这句话写进了 KDoc 第一行和确认框文案。
+
+### 探针先抓到一个窄窗口 bug（上次是他抓的）
+
+评测页顶行我先按「状态文字 `BorderLayout.WEST` + 两个按钮 `GridLayout(1,2)` 放 EAST」写了，
+`Layout172Probe`（带 `JFrame.pack()`，量真实布局）在 240px 与 170px 两档直接量出来：
+JLabel 需要 272px 宽 → 溢出容器、第一个按钮 x 变成 `-4` / `-74`，**两个组件被裁掉**。
+这就是 1.7.1 他被坑过的那一类（`FlowLayout` 折行只算一行高度）。换成
+「状态文字独占一行 + `WrapLayout` 装两个按钮」后三档全 0 裁掉，且比「每行一个组件」省 29px 高度，
+宽的时候两个按钮仍然并排。这个方案现在是产品实现，被否掉的那版留在探针里做对照。
+
+一处与计划的偏离：原计划写「没有可跳的位置时按钮**不出现**」，实现成**变灰 + tooltip 说明原因**——
+`BorderLayout` 里隐藏子组件会留空槽，而且邻居「复制代码」本来就是常年在位、没代码时点了没反应，
+行为一致更好解释。要的效果（不会跳错行）是同一个。
+
+顺带记一条 javac 的误导性报错：探针里写 `new JPanel(java.awt.BorderLayout())` 漏了 `new`，
+编译器报的是「找不到符号 类 awt 位置：程序包 java」，看着像 classpath 问题，其实是少了构造符。
+
+### 验证
+
+**239 条离线断言全绿**：108 条本轮新逻辑（得分合计 17 条，含状态取值顺序那 4 条、跳行解析 34 条
+（其中 16 条是中文 locale、全角冒号与洛谷那个**没有扩展名的 `src`**）、灰按钮原因 13 条、编译错误持久化 round-trip 6 条、
+索引判据 23 条、删除序 6 条、提交记录侧查询 4 条、索引页纯判据 5 条）+ 30 条元数据（版本三处对齐、`<depends>` 仍只有
+platform+jcef、change-notes 用 `release.sh` 的同款非贪婪正则取得到 `<b>1.7.2</b>` 且不嵌 `<li>`、
+README/设置页/`release.sh` 措辞跟上、jar 里五个新类都在且 `compat/` 为 0）
++ 101 条回归（28 编译链路 / 39 纯逻辑 / 22 UI 判据 / 12 进程行为，全部重编译后重跑）。
+另有两份诊断式输出：`Layout172Probe`（三种宽度 × 四种方案的实际像素）、`DiagProbe`（进程合流行为）。
+
+只能他在真 CLion 里看的（探针碰不到的那层）：
+
+1. **先验那条卡住的记录**（CE 持久化 + 启动补轮询）：装上新版直接重启、**先别提交**，之前停在「进行中」
+   的那条 `P1001` 应自己刷出编译错误（quiet：不弹通知、不弹清理框），选中它按钮应变亮并跳到第 5 行；
+   若仍灰着，把 tooltip 那句原因原样贴回来（现在会带 `vector:572` / `57/30` 这类具体值）；
+2. 跳行会不会差一：造一个第 12 行的编译错，跳过去光标要落在写错那一行；
+3. 侧边栏拖窄：评测页「复制代码 / 跳到出错行」两个按钮、题目页底部按钮，有没有被裁（探针量过了，但真实 LaF 与字体要 IDE 里才算数）；
+4. 「题目」页签：切过去自动扫描的行数对不对；选中点「删除本题文件」→ 确认框里列的东西与实际被删的是否一致、通知里的 N 对不对、列表有没有自动重扫；
+5. `Pxxx_cases/` 里自己 `mkdir` 一层子目录塞文件，看有没有被递归删净（目录本身也消失）；
+6. 大小写：把文件改成 `p1001.cpp`，索引与删除都要还能对上（`scan` 与 `targetsOf` 一个走 `java.io` 一个走 VFS，这里最可能不一致）；
+7. 本地文件已改短或挪进子目录（诊断行号超范围 / 文件不在）时按钮是不是**灰着并写明原因**，而不是跳错行；
+8. 总分：正在评测（子任务无分数）时详情区应当**什么都不显示**，跑完才出现「各子任务得分合计 N 分」；重启后从持久化记录算出的分要和新的一样。
+
+
 

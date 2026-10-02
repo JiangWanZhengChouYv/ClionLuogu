@@ -10,14 +10,19 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.user.clionluogu.api.SubmissionStatus
-import com.user.clionluogu.api.SubtaskResult
-import com.user.clionluogu.api.TestCaseResult
-import com.user.clionluogu.api.statusTextOf
 import com.user.clionluogu.service.AcCleanupService
+import com.user.clionluogu.service.CompileErrorLocator
+import com.user.clionluogu.service.CompileHit
 import com.user.clionluogu.service.JudgeNotifyService
 import com.user.clionluogu.service.JudgePollingService
+import com.user.clionluogu.service.LuoguActions
+import com.user.clionluogu.service.ScoreTotals
 import com.user.clionluogu.storage.SubmissionHistoryService
+import com.user.clionluogu.storage.toStatus
 import java.awt.BorderLayout
+import java.awt.FlowLayout
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
 import java.awt.datatransfer.StringSelection
 import javax.swing.DefaultListModel
 import javax.swing.JButton
@@ -61,6 +66,7 @@ class LuoguToolWindow(private val project: Project) {
     private val detailArea = JTextArea()
     private val statusLabel = JBLabel("未选择记录")
     private val copyCodeButton = JButton("复制代码")
+    private val jumpButton = JButton("跳到出错行")
     private val squares = TestCaseSquares()
     private val squaresScroll = JBScrollPane(squares).apply {
         horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
@@ -69,6 +75,9 @@ class LuoguToolWindow(private val project: Project) {
         preferredSize = java.awt.Dimension(10, 120)
     }
     private val rootPanel = JPanel(BorderLayout())
+
+    /** 当前详情里解析出的跳转目标；null 表示这条记录没有可跳的编译错误位置。 */
+    private var pendingJump: CompileHit? = null
 
     init {
         historyList.selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -92,14 +101,33 @@ class LuoguToolWindow(private val project: Project) {
         detailArea.border = JBUI.Borders.empty(6)
 
         copyCodeButton.addActionListener { copySelectedCode() }
+        jumpButton.addActionListener { jumpToCompileError() }
+        jumpButton.isEnabled = false
+        jumpButton.toolTipText = "打开项目根的 Pxxx.cpp 并定位到编译错误那一行"
 
         val listPane = JPanel(BorderLayout())
         listPane.add(JBLabel("提交历史"), BorderLayout.NORTH)
         listPane.add(JBScrollPane(historyList), BorderLayout.CENTER)
 
-        val detailTopRow = JPanel(BorderLayout())
-        detailTopRow.add(statusLabel, BorderLayout.WEST)
-        detailTopRow.add(copyCodeButton, BorderLayout.EAST)
+        // 状态文字独占一行，两个按钮放 WrapLayout：并排放得下就并排，放不下折行且高度算得对。
+        // 探针实测（Layout172Probe）：把「文字 WEST + 两个按钮 GridLayout EAST」塞进 BorderLayout，
+        // 侧边栏窄到 240 / 170 像素时文字会溢出、第一个按钮的 x 变成负数——两个组件直接被裁掉。
+        val detailButtons = JPanel(WrapLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(copyCodeButton)
+            add(jumpButton)
+        }
+        val detailTopRow = JPanel(GridBagLayout()).apply {
+            isOpaque = false
+            fun cell(y: Int) = GridBagConstraints().apply {
+                gridx = 0
+                gridy = y
+                weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+            }
+            add(statusLabel, cell(0))
+            add(detailButtons, cell(1))
+        }
 
         val detailTop = JPanel(BorderLayout())
         detailTop.add(detailTopRow, BorderLayout.NORTH)
@@ -121,6 +149,7 @@ class LuoguToolWindow(private val project: Project) {
         squaresScroll.isVisible = false
 
         loadHistory()
+        refreshUnfinished()
     }
 
     /** 供 factory 装配的内容组件。 */
@@ -141,6 +170,31 @@ class LuoguToolWindow(private val project: Project) {
     }
 
     /**
+     * 两类记录需要在启动时补拉一次：
+     * - 非终态（评测没跑完就重启了 IDE，之后永远停在「进行中」）；
+     * - **CE 但记录里没有编译错误详情**——1.7.2 之前 `Record` 压根不存这个字段，
+     *   老记录必然是空的，不补拉就只能重新提交一次才能跳行。
+     *
+     * 都是 quiet（见 [updateSubmission]）：那是过期的跃迁，弹通知或清理框都很莫名其妙。
+     * 第二类限量，免得攒了几十条 CE 记录时启动就打一排请求。
+     */
+    private fun refreshUnfinished() {
+        val usable = entries.filter { it.rid.isNotBlank() }
+        val judging = usable.filterNot { JudgePollingService.isTerminal(it.status?.statusCode) }
+        val ceWithoutText = usable.filter {
+            it.status?.statusCode == CE_CODE && it.status?.compileError.isNullOrBlank()
+        }.take(MAX_CATCHUP_FETCH)
+        (judging + ceWithoutText).distinct().forEach { entry ->
+            JudgePollingService.startPolling(
+                rid = entry.rid,
+                onUpdate = { st -> updateSubmission(entry.rid, st, quiet = true) },
+                onDone = { st -> updateSubmission(entry.rid, st, quiet = true) },
+                onError = { },
+            )
+        }
+    }
+
+    /**
      * 记录一次新提交（调用方需保证在 EDT；若在后台线程则由 [runOnEdt] 切回）。
      */
     fun addSubmission(pid: String, rid: String, lang: String = "", code: String = "") {
@@ -156,15 +210,19 @@ class LuoguToolWindow(private val project: Project) {
 
     /**
      * 更新某 rid 的状态并刷新列表与详情（调用方需在 EDT，或在本窗口回调场景由 [runOnEdt] 切回）。
+     *
+     * [quiet] = true 用于重启后补轮询的老记录：那已经是**过期的跃迁**，
+     * 再弹清理模态框或失败通知只会莫名其妙，只把数据刷新回来即可。
      */
-    fun updateSubmission(rid: String, status: SubmissionStatus) {
+    fun updateSubmission(rid: String, status: SubmissionStatus, quiet: Boolean = false) {
         runOnEdt {
             val entry = entries.firstOrNull { it.rid == rid } ?: return@runOnEdt
             // 只在「跃迁」时提示：一次终态会被 onUpdate 与 onDone 各回调一次，
             // 若只判状态码就会连弹两个模态框 / 两条通知。
             val wasTerminal = JudgePollingService.isTerminal(entry.status?.statusCode)
-            val reachedAc = status.statusCode == AC_CODE && entry.status?.statusCode != AC_CODE
-            val failedFirstTime = JudgePollingService.isTerminal(status.statusCode) &&
+            val reachedAc = !quiet && status.statusCode == AC_CODE && entry.status?.statusCode != AC_CODE
+            val failedFirstTime = !quiet &&
+                JudgePollingService.isTerminal(status.statusCode) &&
                 status.statusCode != AC_CODE &&
                 !wasTerminal
             entry.status = status
@@ -232,6 +290,8 @@ class LuoguToolWindow(private val project: Project) {
             statusLabel.text = "未选择记录"
             squares.setSubtasks(emptyList())
             squaresScroll.isVisible = false
+            pendingJump = null
+            jumpButton.isEnabled = false
         }
     }
 
@@ -267,15 +327,19 @@ class LuoguToolWindow(private val project: Project) {
     private fun renderDetail(entry: SubmissionEntry) {
         val st = entry.status
         val subtasks = st?.subtaskResults ?: emptyList()
-        squares.setSubtasks(subtasks)
+        // 取值顺序（明细优先、退化到得分文本）在 ScoreTotals 里，与未通过通知共用
+        val total = ScoreTotals.totalScoreOf(st)
+        squares.setSubtasks(subtasks, total)
         squaresScroll.isVisible = subtasks.isNotEmpty()
         squaresScroll.revalidate()
-        statusLabel.text = "${entry.pid} | #${entry.rid}  →  ${st?.statusText ?: "等待"}"
+        statusLabel.text = "${entry.pid} | #${entry.rid}  →  ${st?.statusText ?: "等待"}" +
+            ScoreTotals.totalScoreText(total)
         val sb = StringBuilder()
         sb.append("提交记录：#${entry.rid}\n")
         sb.append("题目：${entry.pid}\n")
         entry.lang?.takeIf { it.isNotBlank() }?.let { sb.append("语言：$it\n") }
         sb.append("状态：${st?.statusText ?: "等待"}\n")
+        if (total != null) sb.append("得分：$total 分（各子任务得分合计）\n")
         st?.timeMs?.let { sb.append("耗时：$it ms\n") }
         st?.memoryKb?.let { sb.append("内存：$it KB\n") }
         if (subtasks.isEmpty() && st?.subtaskInfo?.isNotEmpty() == true) {
@@ -290,6 +354,43 @@ class LuoguToolWindow(private val project: Project) {
         }
         detailArea.text = sb.toString()
         detailArea.caretPosition = 0
+        updateJumpButton(entry)
+    }
+
+    /**
+     * 刷新「跳到出错行」：只看这次评测带回的编译诊断。
+     *
+     * 行号上界用**当次提交的代码**行数——本地文件后来改过、诊断指向的行已经不存在时，
+     * 宁可不给跳（点了会跳错地方），也不猜。
+     */
+    private fun updateJumpButton(entry: SubmissionEntry) {
+        val lineCount = entry.code?.takeIf { it.isNotEmpty() }?.let { c ->
+            runCatching { c.lineSequence().count() }.getOrNull()
+        }
+        val choice = CompileErrorLocator.choose(
+            text = entry.status?.compileError,
+            submittedLineCount = lineCount,
+            hasLocalSource = LuoguActions.hasLocalSource(project, entry.pid),
+        )
+        pendingJump = choice.hit
+        jumpButton.isEnabled = choice.hit != null
+        jumpButton.toolTipText = if (choice.hit != null) {
+            "打开项目根的 ${entry.pid}.cpp 并定位到第 ${choice.hit.line} 行"
+        } else {
+            CompileErrorLocator.missText(choice, entry.pid)
+        }
+    }
+
+    /** 打开项目根的 `Pxxx.cpp` 并定位到编译错误。 */
+    private fun jumpToCompileError() {
+        val entry = selectedEntry() ?: return
+        val hit = pendingJump ?: run {
+            statusLabel.text = "${entry.pid} 这一条没有可跳转的编译错误"
+            return
+        }
+        if (!LuoguActions.openProblemFile(project, entry.pid, hit.line, hit.column)) {
+            statusLabel.text = "项目根下找不到 ${entry.pid}.cpp，跳不了"
+        }
     }
 
     /** 若当前不在 EDT，则切回 EDT 执行；否则直接执行。 */
@@ -308,33 +409,11 @@ class LuoguToolWindow(private val project: Project) {
 
         /** 洛谷「通过 (AC)」状态码，与 `statusTextOf` 的映射表一致。 */
         private const val AC_CODE = 12
-    }
-}
 
-/** 将持久化记录还原为一次评测状态快照；无任何评测数据时返回 null（视为等待中）。 */
-private fun SubmissionHistoryService.Record.toStatus(): SubmissionStatus? {
-    if (statusCode == null && timeMs == null && memoryKb == null && subtasks.isEmpty()) return null
-    return SubmissionStatus(
-        rid = rid,
-        statusCode = statusCode,
-        statusText = statusTextOf(statusCode),
-        timeMs = timeMs,
-        memoryKb = memoryKb,
-        subtaskResults = subtasks.map { sub ->
-            SubtaskResult(
-                id = sub.id,
-                status = sub.status,
-                score = sub.score,
-                testCases = sub.testCases.map { tc ->
-                    TestCaseResult(
-                        id = tc.id,
-                        status = tc.status,
-                        timeMs = tc.timeMs,
-                        memoryKb = tc.memoryKb,
-                        score = tc.score,
-                    )
-                },
-            )
-        },
-    )
+        /** 洛谷「编译错误 (CE)」状态码，同样取自 `statusTextOf` 的表。 */
+        private const val CE_CODE = 2
+
+        /** 启动时最多给多少条「CE 但没有编译错误详情」的老记录补拉一次。 */
+        private const val MAX_CATCHUP_FETCH = 8
+    }
 }

@@ -30,6 +30,9 @@ object JudgeNotifyService {
 
         val head = buildString {
             append("记录 #").append(status.rid)
+            ScoreTotals.totalScoreText(ScoreTotals.totalScoreOf(status)).takeIf { it.isNotEmpty() }?.let {
+                append(" ·").append(it).append("（各子任务合计）")
+            }
             status.timeMs?.let { append(" · 用时 ").append(it).append(" ms") }
             status.memoryKb?.let { append(" · 内存 ").append(it).append(" KB") }
         }

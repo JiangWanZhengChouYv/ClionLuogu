@@ -49,13 +49,23 @@ class TestCaseSquares : JPanel(), Scrollable {
 
     override fun getScrollableTracksViewportHeight(): Boolean = false
 
-    fun setSubtasks(subtasks: List<SubtaskResult>) {
+    /**
+     * [totalScore] 为各子任务得分合计（null = 还不知道，一个字符都不显示）。
+     * 拿不准时宁可不显示，也不要写个 0 分让人以为评测真给了 0 分。
+     */
+    fun setSubtasks(subtasks: List<SubtaskResult>, totalScore: Int? = null) {
         removeAll()
         if (subtasks.isEmpty()) {
             isVisible = false
         } else {
             subtasks.forEachIndexed { index, sub ->
                 add(buildRow(sub), rowConstraints(index))
+            }
+            if (totalScore != null) {
+                add(
+                    JBLabel("各子任务得分合计 $totalScore 分"),
+                    rowConstraints(subtasks.size),
+                )
             }
             isVisible = true
         }

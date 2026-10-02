@@ -11,7 +11,7 @@ import com.user.clionluogu.api.SubmissionStatus
  * 项目级提交记录持久化服务。
  *
  * 保存每次提交的题号、rid、提交时间、语言与当次源码，以及最近一次评测状态快照
- * （状态码 / 总耗时 / 总内存 / 逐子任务与逐测试点）。仅保存业务内容，
+ * （状态码 / 总耗时 / 总内存 / 编译错误详情 / 逐子任务与逐测试点）。仅保存业务内容，
  * **不写入任何 cookie / 凭证**（凭证仍仅由 [SecureCookieStore] 经 PasswordSafe 保存）。
  */
 @Service(Service.Level.PROJECT)
@@ -28,6 +28,7 @@ class SubmissionHistoryService : PersistentStateComponent<SubmissionHistoryServi
         var statusCode: Int? = null
         var timeMs: Long? = null
         var memoryKb: Long? = null
+        var compileError: String? = null
         var subtasks: MutableList<SubtaskRecord> = mutableListOf()
     }
 
@@ -68,6 +69,7 @@ class SubmissionHistoryService : PersistentStateComponent<SubmissionHistoryServi
                 statusCode = r.statusCode
                 timeMs = r.timeMs
                 memoryKb = r.memoryKb
+                compileError = r.compileError
                 subtasks = r.subtasks.map { sub ->
                     SubtaskRecord().apply {
                         id = sub.id
@@ -104,6 +106,18 @@ class SubmissionHistoryService : PersistentStateComponent<SubmissionHistoryServi
         state.records.add(record)
     }
 
+    /**
+     * 某题最近一次提交。记录按追加顺序存，所以取**最后**一条才是当前状态；
+     * 题号大小写忽略（`p1001` 与 `P1001` 是同一题）。
+     */
+    @Synchronized
+    fun latestFor(pid: String): Record? =
+        state.records.lastOrNull { it.pid.equals(pid, ignoreCase = true) }
+
+    /** 提交过的题号集合（统一大写），题库索引页的「只看未提交」用。 */
+    @Synchronized
+    fun submittedPids(): Set<String> = state.records.map { it.pid.uppercase() }.toSet()
+
     /** 用最新状态快照覆盖对应记录（含逐子任务与逐测试点）。 */
     @Synchronized
     fun update(rid: String, status: SubmissionStatus) {
@@ -111,6 +125,7 @@ class SubmissionHistoryService : PersistentStateComponent<SubmissionHistoryServi
         record.statusCode = status.statusCode
         record.timeMs = status.timeMs
         record.memoryKb = status.memoryKb
+        record.compileError = status.compileError
         record.subtasks = status.subtaskResults.map { sub ->
             SubtaskRecord().apply {
                 id = sub.id

@@ -37,7 +37,7 @@ class LuoguConfigurable : Configurable {
         punchBox.isSelected = settings.punchReminderEnabled
         punchReminderCheckBox = punchBox
 
-        val cleanupBox = JBCheckBox("题目 AC 后询问是否删除本题文件（.cpp / .md / 样例目录）")
+        val cleanupBox = JBCheckBox("题目 AC 后询问是否删除本题文件（.cpp / .md / 样例 / 反例目录）")
         cleanupBox.isSelected = settings.acCleanupEnabled
         acCleanupCheckBox = cleanupBox
 

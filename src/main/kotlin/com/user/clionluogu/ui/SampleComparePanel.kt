@@ -18,7 +18,10 @@ import com.intellij.util.ui.UIUtil
 import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.service.CaseExportService
 import com.user.clionluogu.service.CompareTarget
+import com.user.clionluogu.service.CompileErrorLocator
+import com.user.clionluogu.service.CompileHit
 import com.user.clionluogu.service.CompilerService
+import com.user.clionluogu.service.JumpMiss
 import com.user.clionluogu.service.LuoguActions
 import com.user.clionluogu.service.SampleCompareService
 import com.user.clionluogu.service.SampleCompareService.Verdict
@@ -79,6 +82,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     private val stopButton = JButton("停止")
     private val fetchButton = JButton("去拉取")
     private val exportButton = JButton("存反例")
+    private val jumpButton = JButton(JUMP_LABEL)
     private val statusLabel = JBLabel(" ")
 
     private val listModel = DefaultListModel<Row>()
@@ -102,6 +106,9 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
     /** 上一轮跑完的汇总。重新探测（切页签、点列表）不算新一轮，得把它继续显示出来。 */
     private var lastSummary: String? = null
+
+    /** 当前选中行的诊断里解析出的跳转目标；null 表示这一行没有可跳的位置。 */
+    private var pendingJump: CompileHit? = null
 
     /** 编译产物目录：每个窗口一份，退出即删。不放项目根，避免污染仓库或被 AC 清理误删。 */
     private val buildDir: File by lazy {
@@ -160,7 +167,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         }
         resultList.addListSelectionListener {
             val row = selectedRow()
-            detailArea.text = row?.detail.orEmpty()
+            showDetail(row?.detail.orEmpty())
             exportButton.isEnabled = row?.result != null
         }
         onlyFailedBox.addActionListener { rebuildList() }
@@ -188,11 +195,14 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         startButton.isEnabled = false
         exportButton.isEnabled = false
         exportButton.toolTipText = "把选中那一组的输入、期望输出与实际输出写到项目根的 Pxxx_cases/ 里（只有失败的组能存）"
+        jumpButton.isEnabled = false
+        jumpButton.toolTipText = "打开项目根的 Pxxx.cpp 并定位到诊断里的第一条错误；本地文件不在或行号超出代码长度时不出现"
         fetchButton.isVisible = false
         val actionRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 4))
         actionRow.add(startButton)
         actionRow.add(stopButton)
         actionRow.add(exportButton)
+        actionRow.add(jumpButton)
         actionRow.add(fetchButton)
 
         val bottom = JPanel(GridBagLayout())
@@ -222,6 +232,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         startButton.addActionListener { startCompare() }
         stopButton.addActionListener { stopCompare() }
         exportButton.addActionListener { exportCase() }
+        jumpButton.addActionListener { jumpToError() }
         fetchButton.addActionListener { LuoguTabs.openTab(project, LuoguTabs.TAB_FETCH) }
     }
 
@@ -326,7 +337,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         when {
             blocked != null -> {
                 statusLabel.text = blocked.short
-                detailArea.text = blocked.detail
+                showDetail(blocked.detail)
             }
 
             hasResults && lastSummary != null -> {
@@ -336,7 +347,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
             else -> {
                 statusLabel.text = "共 ${t.samples?.samples?.size ?: 0} 组样例，可以开始编译对拍"
-                detailArea.text = introText(pid, t)
+                showDetail(introText(pid, t))
             }
         }
         startButton.isEnabled = blocked == null && !running
@@ -382,6 +393,55 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             else -> "已跑 $ran 组 · 失败 $failed 组"
         }
         exportButton.isEnabled = selectedRow()?.result != null
+    }
+
+    /** 换详情文本，顺带重算「跳到出错行」——所有改详情的地方都走这里，别直接写 [detailArea]。 */
+    private fun showDetail(text: String) {
+        detailArea.text = text
+        updateJumpButton()
+    }
+
+    /**
+     * 按当前详情里的诊断文本刷新「跳到出错行」。
+     *
+     * 行号上界取本地 `Pxxx.cpp` 的实际行数：诊断里指向模板实例化产物的行号在本地那份文件里
+     * 根本不存在，跳过去只会落在文件末尾，不如不给这个按钮。
+     */
+    private fun updateJumpButton() {
+        val pid = currentPid()
+        val choice = CompileErrorLocator.choose(
+            text = detailArea.text,
+            submittedLineCount = localSourceLineCount(pid),
+            hasLocalSource = LuoguActions.hasLocalSource(project, pid),
+        )
+        pendingJump = choice.hit
+        jumpButton.text = CompileErrorLocator.jumpLabel(choice.hit).ifEmpty { JUMP_LABEL }
+        jumpButton.isEnabled = choice.hit != null
+        jumpButton.toolTipText = when {
+            choice.hit != null -> "打开项目根的 $pid.cpp 并定位到第 ${choice.hit.line} 行"
+            // 通过的组 / 非编译行本来就没有诊断，别拿「解析不出位置」吓人
+            choice.miss == JumpMiss.NO_DIAGNOSTIC || choice.miss == JumpMiss.NO_LOCATION ->
+                "只有编译失败那一行有可跳转的位置（选中列表第一行看看）"
+            else -> CompileErrorLocator.missText(choice, pid)
+        }
+    }
+
+    /** 本地那份源文件的行数；文件读不到（没落盘、没权限）返回 null，表示不卡上界。 */
+    private fun localSourceLineCount(pid: String): Int? {
+        val base = project.basePath ?: return null
+        return runCatching { File(base, "$pid.cpp").readLines().size }.getOrNull()
+    }
+
+    /** 打开项目根的 `Pxxx.cpp` 并定位到那条错误。 */
+    private fun jumpToError() {
+        val hit = pendingJump ?: run {
+            statusLabel.text = "这一行没有可跳转的错误位置"
+            return
+        }
+        val pid = currentPid()
+        if (!LuoguActions.openProblemFile(project, pid, hit.line, hit.column)) {
+            statusLabel.text = "项目根下找不到 $pid.cpp，跳不了"
+        }
     }
 
     /** 把选中那一组的输入 / 期望 / 实际写到项目根的 `Pxxx_cases/`，直接喂调试器或本地重跑。 */
@@ -497,7 +557,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         stopButton.isEnabled = true
         fetchButton.isVisible = false
         statusLabel.text = listOfNotNull(savedNote, "编译中…").joinToString(" ")
-        detailArea.text = ""
+        showDetail("")
         // 新一轮开始：先把上一轮的判定清掉，否则跑的过程中新旧混着看不出是哪一轮
         allRows.forEach { row ->
             if (row.sampleIndex != COMPILE_ROW && row.verdict != null) {
@@ -582,7 +642,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         // 只有失败组留完整输出（反例要用）；通过的组不留
         row.result = result.takeIf { it.verdict != Verdict.PASS }
         rebuildList()
-        if (selectedRow() === row) detailArea.text = row.detail
+        if (selectedRow() === row) showDetail(row.detail)
     }
 
     private fun indexOfRow(sampleIndex: Int): Int? {
@@ -626,7 +686,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             lastSummary = "编译失败，点第一行看诊断"
             statusLabel.text = lastSummary
             indexOfRow(COMPILE_ROW)?.let { resultList.selectedIndex = it }
-            detailArea.text = compileDetail(compile)
+            showDetail(compileDetail(compile))
             return
         }
 
@@ -653,9 +713,11 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         lastSummary = summary
         statusLabel.text = summary
         if (firstFailure == null && report.results.isNotEmpty()) {
-            detailArea.text = report.results.joinToString("\n\n") { r ->
-                "样例 ${r.sample.index} · ${verdictText(r.verdict)} · ${r.elapsedMs} ms"
-            } + "\n\n产物：${report.exePath}"
+            showDetail(
+                report.results.joinToString("\n\n") { r ->
+                    "样例 ${r.sample.index} · ${verdictText(r.verdict)} · ${r.elapsedMs} ms"
+                } + "\n\n产物：${report.exePath}",
+            )
         }
     }
 
@@ -736,6 +798,9 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     companion object {
         /** 列表里代表「编译本身」那一行的编号（样例编号从 1 起，不会撞）。 */
         private const val COMPILE_ROW = 0
+
+        /** 没解析出可跳的行号时的按钮文案。 */
+        private const val JUMP_LABEL = "跳到出错行"
 
         @JvmStatic
         fun preservesResults(previousPid: String?, currentPid: String): Boolean =
