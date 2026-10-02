@@ -1,8 +1,10 @@
 package com.user.clionluogu.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.ListSpeedSearch
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
@@ -25,6 +27,7 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.ListSelectionModel
+import javax.swing.ScrollPaneConstants
 
 /**
  * 「题目」页签：项目根下本地题库的索引，以及**手动删除本题文件**的入口。
@@ -50,7 +53,7 @@ class ProblemIndexPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val allRows = mutableListOf<Row>()
     private val listModel = DefaultListModel<Row>()
     private val resultList = JBList<Row>(listModel)
-    private val detailArea = JTextArea()
+    private val detail = DetailPanel()
     private val onlyUnsubmittedBox = JBCheckBox("只看未提交")
     private val countLabel = JBLabel(" ")
     private val statusLabel = JBLabel(" ")
@@ -62,6 +65,9 @@ class ProblemIndexPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     init {
         resultList.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        resultList.emptyText.appendText("项目根下没有 Pxxx.cpp / Pxxx.md 这类文件")
+        // 题多了以后靠敲题号定位，比滚动快
+        ListSpeedSearch(resultList) { row: Row -> row.pid }
         resultList.cellRenderer = object : ColoredListCellRenderer<Row>() {
             override fun customizeCellRenderer(
                 list: JList<out Row>,
@@ -70,8 +76,8 @@ class ProblemIndexPanel(private val project: Project) : JPanel(BorderLayout()) {
                 selected: Boolean,
                 hasFocus: Boolean,
             ) {
-                // 没提交过的题是灰色（verdictColorOf(null) 本来就是灰）
-                icon = VerdictSquareIcon(verdictColorOf(value.latest?.statusCode))
+                // 没提交过的题是空心圈（实心灰块会被当成一个真判定）
+                icon = VerdictSquareIcon(verdictColorOf(value.latest?.statusCode), hollow = value.latest == null)
                 append(value.pid)
                 append("  ${filesSummary(value.entry)}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 value.latest?.let { r ->
@@ -87,12 +93,9 @@ class ProblemIndexPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         onlyUnsubmittedBox.addActionListener { rebuildList() }
 
-        detailArea.isEditable = false
-        detailArea.lineWrap = true
-        detailArea.isFocusable = false
-        detailArea.border = JBUI.Borders.empty(6)
-
         deleteButton.isEnabled = false
+        deleteButton.icon = AllIcons.General.Delete
+        rescanButton.icon = AllIcons.General.Refresh
         deleteButton.toolTipText = "删除项目根下本题的 .cpp / .md / 样例目录 / 反例目录（会先弹一次确认，提交记录保留）"
 
         val listPane = JPanel(BorderLayout())
@@ -104,7 +107,11 @@ class ProblemIndexPanel(private val project: Project) : JPanel(BorderLayout()) {
 
         val split = AutoFlipSplitter(0.35f).apply {
             firstComponent = listPane
-            secondComponent = JBScrollPane(detailArea)
+            secondComponent = JBScrollPane(
+                detail,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+            )
             border = JBUI.Borders.empty(4)
         }
         add(split, BorderLayout.CENTER)
@@ -199,38 +206,27 @@ class ProblemIndexPanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     private fun showDetail() {
-        val row = selectedRow()
+        // 顺手刷新计数与删除按钮的可用性：换一道题就得重算（不能只在重扫时算）
         updateCounts()
-        detailArea.text = detailText(row)
-        detailArea.caretPosition = 0
+        detail.render(indexSectionsFor(selectedRow()))
     }
 
-    private fun detailText(row: Row?): String {
-        if (row == null) return lastNotice ?: "左边选一道题看细节。删除只认项目根下的四个精确名字。"
-        val e = row.entry
-        return buildString {
-            append("题目：").append(e.pid).append('\n')
-            append('\n')
-            append("能删的（只此四个名字，其余一概不碰）：\n")
-            if (e.isEmpty()) {
-                append("  （无）磁盘上没有本题文件\n")
-            } else {
-                e.presentNames().forEach { append("  · ").append(it).append('\n') }
-            }
-            append('\n')
-            val r = row.latest
-            if (r == null) {
-                append("提交记录：这个工程里没有提交过\n")
-            } else {
-                val total = ScoreTotals.totalScoreOfRecords(r.subtasks)
-                append("最近一次提交：#${r.rid} → ${statusTextOf(r.statusCode)}")
-                append(ScoreTotals.totalScoreText(total)).append('\n')
-                r.lang.takeIf { it.isNotBlank() }?.let { append("语言：$it\n") }
-                r.timeMs?.let { append("耗时：$it ms\n") }
-                r.memoryKb?.let { append("内存：$it KB\n") }
-                append("（删除不动提交记录，评测历史还在「评测」页）\n")
-            }
+    /** 没选中题时只给一句提示；选中了就分节显示（产物 / 最近提交 / 删除范围）。 */
+    private fun indexSectionsFor(row: Row?): List<DetailSection> {
+        if (row == null) {
+            val notice = lastNotice ?: "左边选一道题看细节。删除只认项目根下的四个精确名字。"
+            return listOf(DetailSection(null, listOf("提示" to notice), null))
         }
+        val r = row.latest
+        return DetailPanel.indexSections(
+            entry = row.entry,
+            latestRid = r?.rid,
+            latestStatus = r?.let { statusTextOf(it.statusCode) },
+            latestScore = r?.let { ScoreTotals.totalScoreOfRecords(it.subtasks) },
+            latestLang = r?.lang,
+            latestTimeMs = r?.timeMs,
+            latestMemoryKb = r?.memoryKb,
+        )
     }
 
     /** 点删除才删：一次确认框，列清楚要删的东西。 */

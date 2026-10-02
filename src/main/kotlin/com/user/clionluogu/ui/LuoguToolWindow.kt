@@ -1,10 +1,13 @@
 package com.user.clionluogu.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.ListSpeedSearch
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
@@ -30,7 +33,6 @@ import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JScrollPane
-import javax.swing.JTextArea
 import javax.swing.ListSelectionModel
 
 /**
@@ -51,11 +53,8 @@ class LuoguToolWindow(private val project: Project) {
 
         val color: java.awt.Color get() = verdictColorOf(status?.statusCode)
 
-        /** 列表展示文本（就地更新，无需重建模型项）。 */
-        fun displayText(): String {
-            val st = status?.statusText ?: "等待"
-            return "$pid | #$rid | $st"
-        }
+        /** 列表与详情都显示这一句；没评测过时是「等待」。 */
+        val statusText: String get() = status?.statusText ?: "等待"
     }
 
     private val entries = ArrayList<SubmissionEntry>()
@@ -63,7 +62,12 @@ class LuoguToolWindow(private val project: Project) {
 
     // ---- UI 组件 ----
     private val historyList = JBList<SubmissionEntry>(listModel)
-    private val detailArea = JTextArea()
+    private val detail = DetailPanel()
+    private val detailScroll = JBScrollPane(
+        detail,
+        JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+        JScrollPane.HORIZONTAL_SCROLLBAR_NEVER,
+    ).apply { border = null }
     private val statusLabel = JBLabel("未选择记录")
     private val copyCodeButton = JButton("复制代码")
     private val jumpButton = JButton("跳到出错行")
@@ -81,6 +85,7 @@ class LuoguToolWindow(private val project: Project) {
 
     init {
         historyList.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        historyList.emptyText.appendText("还没有提交记录；提交一次就会出现在这里")
         historyList.cellRenderer = object : ColoredListCellRenderer<SubmissionEntry>() {
             override fun customizeCellRenderer(
                 list: JList<out SubmissionEntry>,
@@ -89,21 +94,28 @@ class LuoguToolWindow(private val project: Project) {
                 selected: Boolean,
                 hasFocus: Boolean,
             ) {
-                icon = VerdictSquareIcon(value.color)
-                append(value.displayText())
+                icon = VerdictSquareIcon(value.color, hollow = value.status == null)
+                // 三段分开着色，不再用 `|` 拼成一行
+                append(value.pid, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+                appendTextPadding(JBUI.scale(6))
+                append("#${value.rid}", SimpleTextAttributes.GRAYED_SMALL_ATTRIBUTES)
+                appendTextPadding(JBUI.scale(6))
+                append(
+                    value.statusText,
+                    SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, value.color),
+                )
             }
         }
         historyList.addListSelectionListener { updateDetail() }
 
-        detailArea.isEditable = false
-        detailArea.lineWrap = true
-        detailArea.isFocusable = false
-        detailArea.border = JBUI.Borders.empty(6)
-
         copyCodeButton.addActionListener { copySelectedCode() }
+        copyCodeButton.icon = AllIcons.Actions.Copy
         jumpButton.addActionListener { jumpToCompileError() }
+        jumpButton.icon = AllIcons.Actions.NextOccurence
         jumpButton.isEnabled = false
         jumpButton.toolTipText = "打开项目根的 Pxxx.cpp 并定位到编译错误那一行"
+        // 输入即定位（不用把鼠标移到列表上翻）
+        ListSpeedSearch(historyList) { entry: SubmissionEntry -> "${entry.pid} #${entry.rid}" }
 
         val listPane = JPanel(BorderLayout())
         listPane.add(JBLabel("提交历史"), BorderLayout.NORTH)
@@ -135,7 +147,7 @@ class LuoguToolWindow(private val project: Project) {
 
         val detailPane = JPanel(BorderLayout())
         detailPane.add(detailTop, BorderLayout.NORTH)
-        detailPane.add(JBScrollPane(detailArea), BorderLayout.CENTER)
+        detailPane.add(detailScroll, BorderLayout.CENTER)
 
         // 窄侧边栏里左右两栏都挤，交给 AutoFlipSplitter 按宽度自动改成上下
         val split = AutoFlipSplitter(0.4f).apply {
@@ -286,7 +298,7 @@ class LuoguToolWindow(private val project: Project) {
         runOnEdt {
             entries.clear()
             listModel.clear()
-            detailArea.text = ""
+            detail.render(emptyList())
             statusLabel.text = "未选择记录"
             squares.setSubtasks(emptyList())
             squaresScroll.isVisible = false
@@ -332,28 +344,24 @@ class LuoguToolWindow(private val project: Project) {
         squares.setSubtasks(subtasks, total)
         squaresScroll.isVisible = subtasks.isNotEmpty()
         squaresScroll.revalidate()
-        statusLabel.text = "${entry.pid} | #${entry.rid}  →  ${st?.statusText ?: "等待"}" +
+        statusLabel.text = "${entry.pid} · #${entry.rid} · ${st?.statusText ?: "等待"}" +
             ScoreTotals.totalScoreText(total)
-        val sb = StringBuilder()
-        sb.append("提交记录：#${entry.rid}\n")
-        sb.append("题目：${entry.pid}\n")
-        entry.lang?.takeIf { it.isNotBlank() }?.let { sb.append("语言：$it\n") }
-        sb.append("状态：${st?.statusText ?: "等待"}\n")
-        if (total != null) sb.append("得分：$total 分（各子任务得分合计）\n")
-        st?.timeMs?.let { sb.append("耗时：$it ms\n") }
-        st?.memoryKb?.let { sb.append("内存：$it KB\n") }
-        if (subtasks.isEmpty() && st?.subtaskInfo?.isNotEmpty() == true) {
-            sb.append("子任务：\n")
-            st.subtaskInfo.forEach { sb.append("  • ").append(it).append('\n') }
-        }
-        st?.compileError?.let {
-            sb.append("\n—— 编译错误 ——\n").append(it).append('\n')
-        }
-        entry.code?.takeIf { it.isNotEmpty() }?.let {
-            sb.append("\n—— 提交的代码 ——\n").append(it).append('\n')
-        }
-        detailArea.text = sb.toString()
-        detailArea.caretPosition = 0
+        detail.render(
+            DetailPanel.evalSections(
+                pid = entry.pid,
+                rid = entry.rid,
+                lang = entry.lang,
+                statusText = st?.statusText ?: "等待",
+                totalScore = total,
+                timeMs = st?.timeMs,
+                memoryKb = st?.memoryKb,
+                // 有逐测试点方块时不再重复列得分文本，跟原来一致
+                subtaskInfo = if (subtasks.isEmpty()) st?.subtaskInfo ?: emptyList() else emptyList(),
+                compileError = st?.compileError,
+                code = entry.code,
+            ),
+        )
+        detailScroll.verticalScrollBar.value = 0
         updateJumpButton(entry)
     }
 
@@ -371,11 +379,14 @@ class LuoguToolWindow(private val project: Project) {
             text = entry.status?.compileError,
             submittedLineCount = lineCount,
             hasLocalSource = LuoguActions.hasLocalSource(project, entry.pid),
+            // 评测页知道自己要开的是项目根那份 Pxxx.cpp，把它交给第①层去比对
+            localFileName = "${entry.pid}.cpp",
         )
         pendingJump = choice.hit
         jumpButton.isEnabled = choice.hit != null
         jumpButton.toolTipText = if (choice.hit != null) {
-            "打开项目根的 ${entry.pid}.cpp 并定位到第 ${choice.hit.line} 行"
+            "打开项目根的 ${entry.pid}.cpp 并定位到第 ${choice.hit.line} 行" +
+                CompileErrorLocator.hitNote(choice)
         } else {
             CompileErrorLocator.missText(choice, entry.pid)
         }

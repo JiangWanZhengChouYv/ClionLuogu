@@ -6,6 +6,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.service.LuoguActions
 import java.awt.BorderLayout
@@ -31,8 +32,12 @@ class FetchPanel(
         resultArea.isEditable = false
         resultArea.lineWrap = true
         resultArea.border = JBUI.Borders.empty(6)
+        resultArea.emptyText.appendText("输入题号点「拉取」：会生成 Pxxx.cpp / Pxxx.md 与全部样例")
 
-        val inputRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 6))
+        // WrapLayout 而不是 FlowLayout：普通 FlowLayout 折行后 preferredSize 只算一行，
+        // 窄侧边栏里第二行会被整块裁掉（1.7.1 真踩过）
+        val inputRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 4))
+        inputRow.border = JBUI.Borders.empty(6, 8, 0, 8)
         inputRow.add(JBLabel("题号"))
         inputRow.add(pidField)
         inputRow.add(fetchButton)
@@ -45,18 +50,24 @@ class FetchPanel(
         solutionsButton.addActionListener { doShowSolutions() }
     }
 
+    /** 结果区的一句话开关：出错时染成错误色，别和成功信息长一个样。 */
+    private fun show(text: String, error: Boolean = false) {
+        resultArea.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
+        resultArea.text = text
+    }
+
     private fun doFetch() {
         val pid = pidField.text.trim()
         if (!LuoguPidValidator.isValidPid(pid)) {
-            resultArea.text = "题号格式无效"
+            show("题号格式无效", error = true)
             return
         }
-        resultArea.text = "拉取中…"
+        show("拉取中…")
         LuoguActions.fetchAndGenerate(
             project = project,
             pid = pid,
-            onResult = { text -> resultArea.text = text },
-            onError = { msg -> resultArea.text = msg },
+            onResult = { text -> show(text) },
+            onError = { msg -> show(msg, error = true) },
         )
     }
 
@@ -64,10 +75,10 @@ class FetchPanel(
     private fun doShowSolutions() {
         val pid = pidField.text.trim()
         if (!LuoguPidValidator.isValidPid(pid)) {
-            resultArea.text = "题号格式无效"
+            show("题号格式无效", error = true)
             return
         }
-        resultArea.text = "已在「预览」页打开 $pid 的题解"
+        show("已在「预览」页打开 $pid 的题解")
         onSolutions(pid)
     }
 }

@@ -1,5 +1,6 @@
 package com.user.clionluogu.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
@@ -45,6 +46,7 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.ListSelectionModel
+import javax.swing.ScrollPaneConstants
 
 /**
  * 「对拍」页签：**现场编译** `Pxxx.cpp`，再把拉题落盘的样例一组组喂进去比对。
@@ -87,7 +89,10 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
     private val listModel = DefaultListModel<Row>()
     private val resultList = JBList<Row>(listModel)
-    private val detailArea = JTextArea()
+    private val detail = DetailPanel()
+
+    /** 当前详情区的原文：跳行按钮解析的就是它（渲染成分节之后，文本仍留一份）。 */
+    private var detailText = ""
 
     /** 过滤与计数：`listModel` 只是 `allRows` 的一个视图（只看失败时过滤掉通过的组）。 */
     private val allRows = mutableListOf<Row>()
@@ -146,6 +151,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         add(north, BorderLayout.NORTH)
 
         resultList.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        resultList.emptyText.appendText("还没有结果：点下面「编译并对拍」")
         resultList.cellRenderer = object : ColoredListCellRenderer<Row>() {
             override fun customizeCellRenderer(
                 list: JList<out Row>,
@@ -154,7 +160,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
                 selected: Boolean,
                 hasFocus: Boolean,
             ) {
-                icon = VerdictSquareIcon(verdictColorOf(statusCodeOf(value.verdict)))
+                icon = VerdictSquareIcon(verdictColorOf(statusCodeOf(value.verdict)), hollow = value.verdict == null)
                 append(value.title)
                 if (value.summary.isNotBlank()) {
                     append("  ${value.summary}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
@@ -172,11 +178,6 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         }
         onlyFailedBox.addActionListener { rebuildList() }
 
-        detailArea.isEditable = false
-        detailArea.lineWrap = false
-        detailArea.font = Font(Font.MONOSPACED, Font.PLAIN, detailArea.font.size)
-        detailArea.border = JBUI.Borders.empty(6)
-
         val listPane = JPanel(BorderLayout())
         val filterRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
         filterRow.add(onlyFailedBox)
@@ -186,7 +187,11 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
         val split = AutoFlipSplitter(0.35f).apply {
             firstComponent = listPane
-            secondComponent = JBScrollPane(detailArea)
+            secondComponent = JBScrollPane(
+                detail,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+            )
             border = JBUI.Borders.empty(4)
         }
         add(split, BorderLayout.CENTER)
@@ -197,6 +202,13 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         exportButton.toolTipText = "把选中那一组的输入、期望输出与实际输出写到项目根的 Pxxx_cases/ 里（只有失败的组能存）"
         jumpButton.isEnabled = false
         jumpButton.toolTipText = "打开项目根的 Pxxx.cpp 并定位到诊断里的第一条错误；本地文件不在或行号超出代码长度时不出现"
+        // 图标只用来让动作一眼可辨；主 CTA（编译并对拍）保持纯文字按钮
+        reprobeButton.icon = AllIcons.General.Refresh
+        pickCompilerButton.icon = AllIcons.General.Settings
+        stopButton.icon = AllIcons.Actions.Cancel
+        exportButton.icon = AllIcons.General.Add
+        jumpButton.icon = AllIcons.Actions.NextOccurence
+        fetchButton.icon = AllIcons.General.ChevronRight
         fetchButton.isVisible = false
         val actionRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 4))
         actionRow.add(startButton)
@@ -395,9 +407,10 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         exportButton.isEnabled = selectedRow()?.result != null
     }
 
-    /** 换详情文本，顺带重算「跳到出错行」——所有改详情的地方都走这里，别直接写 [detailArea]。 */
+    /** 换详情文本，顺带重算「跳到出错行」——所有改详情的地方都走这里，别直接写 [detailText]。 */
     private fun showDetail(text: String) {
-        detailArea.text = text
+        detailText = text
+        detail.render(DetailPanel.sectionsFromText(text))
         updateJumpButton()
     }
 
@@ -410,15 +423,18 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     private fun updateJumpButton() {
         val pid = currentPid()
         val choice = CompileErrorLocator.choose(
-            text = detailArea.text,
+            text = detailText,
             submittedLineCount = localSourceLineCount(pid),
             hasLocalSource = LuoguActions.hasLocalSource(project, pid),
+            // 对拍页最清楚自己刚编的是哪个文件，直接把那个文件名交给第①层比对
+            localFileName = target?.sourcePath?.let { File(it).name } ?: "$pid.cpp",
         )
         pendingJump = choice.hit
         jumpButton.text = CompileErrorLocator.jumpLabel(choice.hit).ifEmpty { JUMP_LABEL }
         jumpButton.isEnabled = choice.hit != null
         jumpButton.toolTipText = when {
-            choice.hit != null -> "打开项目根的 $pid.cpp 并定位到第 ${choice.hit.line} 行"
+            choice.hit != null ->
+                "打开项目根的 $pid.cpp 并定位到第 ${choice.hit.line} 行" + CompileErrorLocator.hitNote(choice)
             // 通过的组 / 非编译行本来就没有诊断，别拿「解析不出位置」吓人
             choice.miss == JumpMiss.NO_DIAGNOSTIC || choice.miss == JumpMiss.NO_LOCATION ->
                 "只有编译失败那一行有可跳转的位置（选中列表第一行看看）"

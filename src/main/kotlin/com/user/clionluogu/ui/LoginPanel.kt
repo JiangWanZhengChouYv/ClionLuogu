@@ -5,6 +5,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import com.user.clionluogu.api.UserProfile
 import com.user.clionluogu.service.LuoguActions
 import java.awt.BorderLayout
@@ -112,8 +113,12 @@ class LoginPanel(private val project: Project) : JPanel() {
     private fun buildLoginCard(): JPanel {
         val card = JPanel(BorderLayout())
 
-        clientIdField.columns = 40
-        uidField.columns = 40
+        // columns 只影响首选宽度：表单是 fill=HORIZONTAL，窄侧边栏里照样铺满整行。
+        // 原来写 40，等于把「首选宽度」撑到比侧边栏还宽一倍，白白把别的面板挤窄。
+        clientIdField.columns = 20
+        uidField.columns = 20
+        clientIdField.emptyText.appendText("从浏览器 Cookie 里复制")
+        uidField.emptyText.appendText("从浏览器 Cookie 里复制")
 
         val form = JPanel(GridBagLayout())
         form.border = JBUI.Borders.empty(8)
@@ -124,15 +129,17 @@ class LoginPanel(private val project: Project) : JPanel() {
             fill = GridBagConstraints.HORIZONTAL
             insets = JBUI.insets(4)
         }
-        form.add(JBLabel("__client_id（浏览器 F12 → 应用程序 → Cookie）"), gbc)
+        // 长说明挪进 tooltip：那一长串（含箭头）在窄侧边栏里会被裁掉，而且和字段抢行宽
+        form.add(cookieHintLabel("__client_id").apply { toolTipText = COOKIE_WHERE }, gbc)
         gbc.gridy++
         form.add(clientIdField, gbc)
         gbc.gridy++
-        form.add(JBLabel("_uid"), gbc)
+        form.add(cookieHintLabel("_uid").apply { toolTipText = COOKIE_WHERE }, gbc)
         gbc.gridy++
         form.add(uidField, gbc)
 
-        val buttonRow = JPanel()
+        val buttonRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
+        buttonRow.border = JBUI.Borders.empty(0, 8, 8, 8)
         buttonRow.add(loginButton)
 
         val top = JPanel(BorderLayout())
@@ -142,6 +149,11 @@ class LoginPanel(private val project: Project) : JPanel() {
         card.add(top, BorderLayout.NORTH)
         card.add(loginStatusLabel, BorderLayout.CENTER)
         return card
+    }
+
+    private fun cookieHintLabel(name: String): JBLabel = JBLabel("$name　").apply {
+        // 等宽：Cookie 名就是标识符，混在中文里反而认不出来
+        font = DetailPanel.monoFont()
     }
 
     private fun buildAccountCard(): JPanel {
@@ -156,7 +168,7 @@ class LoginPanel(private val project: Project) : JPanel() {
         header.add(avatarLabel, BorderLayout.WEST)
         header.add(rowsPanel, BorderLayout.CENTER)
 
-        val buttonRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 6))
+        val buttonRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
         buttonRow.add(refreshButton)
         buttonRow.add(logoutButton)
 
@@ -186,10 +198,10 @@ class LoginPanel(private val project: Project) : JPanel() {
                 if (uidNumber != null) {
                     showAccount(uidNumber)
                 } else {
-                    loginStatusLabel.text = "登录校验失败：uid 不是有效数字"
+                    status(loginStatusLabel, "登录校验失败：uid 不是有效数字", error = true)
                 }
             },
-            onError = { msg -> loginStatusLabel.text = msg },
+            onError = { msg -> status(loginStatusLabel, msg, error = true) },
         )
     }
 
@@ -214,6 +226,7 @@ class LoginPanel(private val project: Project) : JPanel() {
                 clearAccount()
                 cardLayout.show(this, CARD_LOGIN)
                 loginStatusLabel.text = errorText ?: "已退出登录，Cookie 已清除"
+                if (errorText != null) loginStatusLabel.foreground = UIUtil.getErrorForeground()
                 notifyLoginState(false)
             }
         }
@@ -263,7 +276,9 @@ class LoginPanel(private val project: Project) : JPanel() {
                     accountStatusLabel.text = " "
                 }
             },
-            onError = { msg -> if (gen == generation) accountStatusLabel.text = msg },
+            onError = { msg ->
+                if (gen == generation) status(accountStatusLabel, msg, error = true)
+            },
         )
     }
 
@@ -277,7 +292,8 @@ class LoginPanel(private val project: Project) : JPanel() {
         fun add(label: String, value: String?) {
             if (value.isNullOrBlank()) return // 为空：整行不显示
             rowsPanel.add(
-                JBLabel("$label："),
+                // 标签用弱化色，值用正常色：靠 GridBag 的列间距对齐，不再拿全角冒号假对齐
+                JBLabel(label).apply { foreground = UIUtil.getLabelDisabledForeground() },
                 GridBagConstraints().apply {
                     gridx = 0
                     gridy = row
@@ -357,7 +373,15 @@ class LoginPanel(private val project: Project) : JPanel() {
         accountStatusLabel.text = " "
     }
 
+    /** 状态标签原来成功与失败长一个样；出错至少染成错误色。 */
+    private fun status(label: JBLabel, text: String, error: Boolean = false) {
+        label.text = text
+        label.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
+    }
+
     private companion object {
+        /** 两个 Cookie 怎么找：以前摊在标签里（窄侧边栏会被裁），现在放 tooltip。 */
+        const val COOKIE_WHERE = "浏览器 F12 → Application（应用程序）→ Cookies → luogu.com.cn，复制对应值"
         const val CARD_LOGIN = "cardLogin"
         const val CARD_ACCOUNT = "cardAccount"
         const val AVATAR_SIZE = 64

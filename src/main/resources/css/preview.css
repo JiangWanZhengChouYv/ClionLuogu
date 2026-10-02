@@ -1,0 +1,160 @@
+/*
+ * 预览页（题面 / 题解）的样式。以前这些规则散在 PreviewPanel.themeCss() 的字符串拼接里，
+ * 想调个间距得改 Kotlin。
+ *
+ * 里面的 @TOKEN@ 由 Kotlin 按当前 IDE 主题替换（十六进制色值与字体），所以浅色/深色
+ * 自动跟随。无 JCEF 时同一份 CSS 会喂给 JEditorPane —— 它只认 CSS 2.1，
+ * 所以这里**不要用 flex / grid / nth-child 之外的新特性**：不支持的声明会被静默丢弃，
+ * 排版会悄悄塌掉而没人报错。圆角、::selection 这类属于「丢了也不难看」的装饰，可以用。
+ */
+
+:root {
+    color-scheme: @SCHEME@;
+}
+
+body {
+    font-family: @FONT@;
+    font-size: @SIZE@px;
+    line-height: 1.7;
+    padding: 12px 14px 18px 14px;
+    margin: 0;
+    background: @BG@;
+    color: @FG@;
+}
+
+h1 {
+    font-size: 19px;
+    font-weight: 600;
+    line-height: 1.35;
+    margin: 0 0 10px 0;
+    padding: 0 0 8px 0;
+    border-bottom: 1px solid @BORDER@;
+}
+
+h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 20px 0 6px 0;
+    padding: 0 0 4px 0;
+    border-bottom: 1px solid @ROW_BG@;
+}
+
+h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 14px 0 4px 0;
+    color: @MUTED@;
+}
+
+p, ul, ol {
+    margin: 0 0 10px 0;
+}
+
+li {
+    margin: 0 0 3px 0;
+}
+
+a {
+    color: @ACCENT@;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+code {
+    font-family: @MONO@;
+    font-size: 0.95em;
+    padding: 1px 4px;
+    background: @CODE_BG@;
+    border: 1px solid @BORDER@;
+    border-radius: 3px;
+}
+
+pre {
+    font-family: @MONO@;
+    font-size: @SIZE@px;
+    line-height: 1.55;
+    padding: 8px 10px;
+    margin: 0 0 12px 0;
+    white-space: pre;
+    overflow-x: auto;
+    background: @CODE_BG@;
+    color: @FG@;
+    border: 1px solid @BORDER@;
+    border-radius: 5px;
+}
+
+table {
+    border-collapse: collapse;
+    margin: 0 0 12px 0;
+}
+
+th, td {
+    border: 1px solid @BORDER@;
+    padding: 3px 9px;
+    text-align: left;
+}
+
+th {
+    background: @CODE_BG@;
+    font-weight: 600;
+}
+
+img {
+    max-width: 100%;
+    border-radius: 4px;
+}
+
+blockquote {
+    margin: 0 0 12px 0;
+    padding: 2px 0 2px 10px;
+    border-left: 3px solid @BORDER@;
+    color: @MUTED@;
+}
+
+hr {
+    border: 0;
+    border-top: 1px solid @BORDER@;
+    margin: 16px 0;
+}
+
+/* 题面头部那组「难度 / 时间限制 / 内存限制 / 分数」：从 <b>x</b>：y<br/> 改成徽章条 */
+.meta {
+    margin: 0 0 14px 0;
+}
+
+.chip {
+    display: inline-block;
+    margin: 0 6px 6px 0;
+    padding: 2px 9px;
+    font-size: 12px;
+    background: @CODE_BG@;
+    border: 1px solid @BORDER@;
+    border-radius: 10px;
+    color: @FG@;
+}
+
+.chip b {
+    font-weight: 600;
+    margin-right: 5px;
+    color: @MUTED@;
+}
+
+/* 作者 / 投票这类附属信息 */
+.byline {
+    margin: 0 0 14px 0;
+    font-size: 12px;
+    color: @MUTED@;
+}
+
+.votes {
+    color: @MUTED@;
+    font-size: 12px;
+}
+
+::selection {
+    background: @ACCENT@;
+    color: @BG@;
+}

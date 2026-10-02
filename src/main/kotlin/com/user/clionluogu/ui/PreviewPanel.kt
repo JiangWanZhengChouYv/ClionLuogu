@@ -306,8 +306,6 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         sb.append(if (JBColor.isBright()) "only light" else "dark")
         sb.append("\"><style>")
         sb.append(themeCss())
-        sb.append("img{max-width:100%;}")
-        sb.append("h1{font-size:18px;}h2{font-size:15px;}h3{font-size:14px;}")
         sb.append("</style>")
         sb.append("<script>window.MathJax={tex:{inlineMath:[['\$','\$'],['\\\\(','\\\\)']],")
         sb.append("displayMath:[['\$\$','\$\$'],['\\\\[','\\\\]']]},options:{enableMenu:false}};</script>")
@@ -335,12 +333,16 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
         val time = problem.limits.time.firstOrNull()
         val memory = problem.limits.memory.firstOrNull()
-        sb.append("<p>")
-        sb.append("<b>难度</b>：").append(escapeHtml(difficultyText(problem.difficulty))).append("<br/>")
-        sb.append("<b>时间限制</b>：").append(time?.let { "$it ms" } ?: "暂无").append("<br/>")
-        sb.append("<b>内存限制</b>：").append(memory?.let { "$it KB" } ?: "暂无").append("<br/>")
-        sb.append("<b>分数</b>：").append(problem.fullScore)
-        sb.append("</p>")
+        // 徽章条：原来是四行 `<b>标签</b>：值<br/>`，在窄面板里像一张没边框的表
+        sb.append("<div class=\"meta\">")
+        sb.append("<span class=\"chip\"><b>难度</b>")
+            .append(escapeHtml(difficultyText(problem.difficulty))).append("</span>")
+        sb.append("<span class=\"chip\"><b>时间限制</b>")
+            .append(time?.let { "$it ms" } ?: "暂无").append("</span>")
+        sb.append("<span class=\"chip\"><b>内存限制</b>")
+            .append(memory?.let { "$it KB" } ?: "暂无").append("</span>")
+        sb.append("<span class=\"chip\"><b>分数</b>").append(problem.fullScore).append("</span>")
+        sb.append("</div>")
 
         val body = problem.content ?: problem.contenu
         if (body == null) {
@@ -370,9 +372,10 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     private fun buildSolutionHtml(solution: SolutionSummary): String {
         val sb = startHtml()
         sb.append("<h1>").append(escapeHtml(solution.title)).append("</h1>")
-        sb.append("<p><b>作者</b>：").append(escapeHtml(solution.author ?: "佚名"))
-        solution.upvote?.let { sb.append("　<b>投票</b>：").append(it) }
-        sb.append("</p>")
+        sb.append("<div class=\"byline\"><span class=\"chip\"><b>作者</b>")
+            .append(escapeHtml(solution.author ?: "佚名")).append("</span>")
+        solution.upvote?.let { sb.append("<span class=\"votes\">↑ ").append(it).append("</span>") }
+        sb.append("</div>")
 
         val markdown = solution.contentMarkdown
         if (markdown.isNullOrBlank()) {
@@ -403,23 +406,42 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     private fun jsonLiteral(text: String): String =
         Json.encodeToString(String.serializer(), text).replace("</", "<\\/")
 
+    /**
+     * 主题化样式：规则在 <code>resources/css/preview.css</code> 里，这里只按当前 IDE 主题
+     * 把 @TOKEN@ 换成实际色值与字体，所以浅色/深色自动跟随，改样式也不用动 Kotlin。
+     *
+     * 字体取 IDE 的 UI 字体与正文字号（以前写死 `sans-serif` + 13px，在放大字体的
+     * 高分屏上比周围界面小一圈）。
+     */
     private fun themeCss(): String {
         val background = UIUtil.getPanelBackground()
         val foreground = UIUtil.getLabelForeground()
+        val muted = UIUtil.getLabelDisabledForeground()
         val codeBackground = JBColor(Color(0xF2, 0xF2, 0xF2), Color(0x2B, 0x2D, 0x30))
+        val rowBackground = JBColor(Color(0xE4, 0xE4, 0xE4), Color(0x3C, 0x3F, 0x42))
         val borderColor = JBColor(Color(0xCC, 0xCC, 0xCC), Color(0x4E, 0x51, 0x55))
-        return buildString {
-            append(":root{color-scheme:").append(if (JBColor.isBright()) "only light" else "dark").append(";}")
-            append("body{font-family:sans-serif;font-size:13px;line-height:1.6;padding:8px;margin:0;")
-            append("background:").append(hex(background)).append(";color:").append(hex(foreground)).append(";}")
-            append("pre{font-family:monospace;padding:6px;white-space:pre-wrap;background:")
-            append(hex(codeBackground)).append(";color:").append(hex(foreground))
-            append(";border:1px solid ").append(hex(borderColor)).append(";}")
-            append("table{border-collapse:collapse;}td,th{border:1px solid ").append(hex(borderColor))
-            append(";padding:2px 4px;}")
-            append("h1,h2,h3,p,li,td,th{color:").append(hex(foreground)).append(";}")
-        }
+        val accent = JBColor.namedColor(
+            "Link.activeForeground",
+            JBColor(Color(0x2A, 0x6F, 0xB5), Color(0x6A, 0xB6, 0xF2)),
+        )
+        val uiFont = UIUtil.getLabelFont()
+        return PREVIEW_CSS
+            .replace("@SCHEME@", if (JBColor.isBright()) "only light" else "dark")
+            .replace("@FONT@", cssFontList(uiFont.family))
+            .replace("@MONO@", cssFontList(java.awt.Font.MONOSPACED))
+            .replace("@SIZE@", uiFont.size.toString())
+            .replace("@BG@", hex(background))
+            .replace("@FG@", hex(foreground))
+            .replace("@MUTED@", hex(muted))
+            .replace("@CODE_BG@", hex(codeBackground))
+            .replace("@ROW_BG@", hex(rowBackground))
+            .replace("@BORDER@", hex(borderColor))
+            .replace("@ACCENT@", hex(accent))
     }
+
+    /** 字体栈：先把 IDE 实际用的字体放前面，再退回通用族（CSS 里不能出现引号外的空格族名）。 */
+    private fun cssFontList(family: String): String =
+        "\"${family.replace("\"", "")}\", sans-serif"
 
     private fun hex(color: Color): String =
         String.format("#%02x%02x%02x", color.red, color.green, color.blue)
@@ -483,5 +505,8 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
         /** 公式保护 + 清洗 + 挂载，见 resources/js/solution-render.js。 */
         private val SOLUTION_RENDER_JS: String by lazy { resourceText("/js/solution-render.js") }
+
+        /** 预览页样式表（@TOKEN@ 由 [themeCss] 按主题替换），见 resources/css/preview.css。 */
+        private val PREVIEW_CSS: String by lazy { resourceText("/css/preview.css") }
     }
 }

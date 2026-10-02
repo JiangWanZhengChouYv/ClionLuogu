@@ -8,10 +8,12 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import com.user.clionluogu.api.LuoguApiService
 import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.service.LuoguActions
 import java.awt.BorderLayout
+import java.awt.FlowLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import javax.swing.DefaultComboBoxModel
@@ -42,6 +44,9 @@ class SubmitPanel(
         previewArea.isEditable = false
         previewArea.lineWrap = false
         previewArea.border = JBUI.Borders.empty(6)
+        // 预览的是 C++ 源码，用等宽字体；不折行，长行横向滚
+        previewArea.font = DetailPanel.monoFont()
+        previewArea.emptyText.appendText("这里显示将要提交的代码（当前编辑器的那份）")
 
         val form = JPanel(GridBagLayout())
         form.border = JBUI.Borders.empty(8)
@@ -62,9 +67,11 @@ class SubmitPanel(
         gbc.gridy++
         form.add(refreshButton, gbc)
 
-        val bottom = JPanel(BorderLayout())
-        bottom.add(submitButton, BorderLayout.WEST)
-        bottom.add(statusLabel, BorderLayout.CENTER)
+        // 不用 BorderLayout 的 WEST + CENTER：窄侧边栏下状态文字会把提交按钮挤出去
+        val bottom = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
+        bottom.border = JBUI.Borders.empty(4, 8)
+        bottom.add(submitButton)
+        bottom.add(statusLabel)
 
         add(form, BorderLayout.NORTH)
         add(JBScrollPane(previewArea), BorderLayout.CENTER)
@@ -85,34 +92,41 @@ class SubmitPanel(
         return text
     }
 
+    /** 出错的话染成错误色——原来成功与失败长一个样，得读完才知道是报错。 */
+    private fun setStatus(text: String, error: Boolean = false) {
+        statusLabel.text = text
+        statusLabel.toolTipText = text.takeIf { error }
+        statusLabel.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
+    }
+
     private fun refreshPreview() {
         readCurrentCode()
         if (FileEditorManager.getInstance(project).selectedTextEditor == null) {
-            statusLabel.text = "未打开编辑器，无代码可预览"
+            setStatus("未打开编辑器，无代码可预览", error = true)
         }
     }
 
     private fun doSubmit() {
         val pid = pidField.text.trim()
         if (!LuoguPidValidator.isValidPid(pid)) {
-            statusLabel.text = "题号格式无效"
+            setStatus("题号格式无效", error = true)
             return
         }
         val langName = (langCombo.selectedItem as? String) ?: run {
-            statusLabel.text = "未知语言版本"
+            setStatus("未知语言版本", error = true)
             return
         }
         val lang = LuoguApiService.LANGUAGES[langName] ?: run {
-            statusLabel.text = "未知语言版本"
+            setStatus("未知语言版本", error = true)
             return
         }
         val code = readCurrentCode()
         if (code.isEmpty()) {
-            statusLabel.text = "未打开编辑器或文件为空，无代码可提交"
+            setStatus("未打开编辑器或文件为空，无代码可提交", error = true)
             return
         }
 
-        statusLabel.text = "提交中…"
+        setStatus("提交中…")
         LuoguActions.submit(
             project = project,
             pid = pid,
@@ -120,10 +134,10 @@ class SubmitPanel(
             code = code,
             captchaPrompter = { CaptchaPrompt.promptCaptcha(project, it) },
             onResult = { rid ->
-                statusLabel.text = "已提交到 $pid，记录 id=$rid"
+                setStatus("已提交到 $pid，记录 id=$rid")
                 onSubmitted(pid, rid, langName, code)
             },
-            onError = { msg -> statusLabel.text = msg },
+            onError = { msg -> setStatus(msg, error = true) },
         )
     }
 

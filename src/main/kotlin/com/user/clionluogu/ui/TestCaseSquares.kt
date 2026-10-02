@@ -1,5 +1,6 @@
 package com.user.clionluogu.ui
 
+import com.intellij.ui.ColorUtil
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import com.user.clionluogu.api.SubtaskResult
@@ -99,7 +100,8 @@ class TestCaseSquares : JPanel(), Scrollable {
         val square = JLabel("#${tc.id + 1}", SwingConstants.CENTER)
         square.isOpaque = true
         square.background = bg
-        square.foreground = if (isLight(bg)) Color.BLACK else Color.WHITE
+        // 亮度判断交给平台工具（ColorUtil 用的是 WCAG 那套相对亮度，不是手搓加权和）
+        square.foreground = if (ColorUtil.isDark(bg)) Color.WHITE else Color.BLACK
         square.font = square.font.deriveFont(square.font.size2D - 2f)
         square.preferredSize = Dimension(JBUI.scale(22), JBUI.scale(22))
         square.toolTipText = tooltipOf(tc)
@@ -112,7 +114,4 @@ class TestCaseSquares : JPanel(), Scrollable {
         tc.memoryKb?.let { sb.append(" · ").append(it).append(" KB") }
         return sb.toString()
     }
-
-    private fun isLight(color: Color): Boolean =
-        color.red * 299 + color.green * 587 + color.blue * 114 > 150 * 1000
 }

@@ -880,5 +880,103 @@ README/设置页/`release.sh` 措辞跟上、jar 里五个新类都在且 `compa
 7. 本地文件已改短或挪进子目录（诊断行号超范围 / 文件不在）时按钮是不是**灰着并写明原因**，而不是跳错行；
 8. 总分：正在评测（子任务无分数）时详情区应当**什么都不显示**，跑完才出现「各子任务得分合计 N 分」；重启后从持久化记录算出的分要和新的一样。
 
+## 35. 1.7.3：整体现代化（他说「UI 看起来很土」）
+
+功能上 1.7.2 已经够了，这一版纯改呈现。他的原话是「这个 UI 开起来还是很土」，然后补了一句「让整体现代化一点，插件大没关系」——
+所以目标不是调色，而是把**信息的组织方式**换掉。
+
+### 病根不在配色，在「所有信息拼成一个大字符串」
+
+对着他那张截图能数出四件事：
+
+1. 评测详情是一个 `JTextArea`（`lineWrap=true`、没设字体），里面塞了元信息 + `—— 编译错误 ——` + 原始诊断 +
+   `—— 提交的代码 ——` + 整份源码。所以诊断被折成 `In funct` / `ion` 那种断词，而且**鼠标划不动、复制不了**
+   （`isFocusable=false`）。
+2. 分隔线、项目符号、对齐全是手搓 ASCII：`|`、`→`、`•`、`·`、`—— X ——`、`String.format("  %6d ms")`、
+   `padStart(4)`、全角空格。
+3. 整个插件只有 2 个图标（标题栏那两个动作），面板内零图标、零层级。
+4. 间距各写各的，还有 4 处普通 `FlowLayout` —— 就是 1.7.1 把他坑过一次的那种。
+
+### 决定不做的两件事（和理由）
+
+- **不上 Kotlin UI DSL v2**（`panel { row {} }`）。它返回 `DialogPanel`，工具窗口内容里 `onApply/onIsModified`
+  全用不上；首选宽度按 MigLayout 算，460/240/170 三档得重新验一遍；而收益只是「间距统一」。
+  把 879 行的 `SampleComparePanel` 重写一遍换这个不值。继续 GridBag + `WrapLayout` + `AutoFlipSplitter`。
+- **没有把所有按钮换成 `LinkLabel`**（计划里写了）。真做下来发现次级按钮**变灰**比**消失**更有用：
+  上一轮那个 bug 就是靠灰按钮的 tooltip 一次收敛的，隐藏掉就没得悬停了。
+  所以只加图标、保留 `JButton` 与 disabled 态；`LinkLabel` 那部分改动作废。
+  这条是执行中改的主意，写下来免得下次又照计划走一遍。
+
+### 做了什么
+
+**`ui/DetailPanel.kt`（新）** —— 结构化详情区：`TitledSeparator` 分节、`SimpleColoredComponent` 键值行
+（标签 `GRAYED_SMALL`、值 `REGULAR`，不靠全角冒号对齐）、每个正文块是**独立**的等宽只读文本域
+（`lineWrap=false` + 横向滚动 + 编辑器底色 + 描边），可以选中复制。
+
+关键设计是 `sectionsFromText(raw)` 这个**纯函数**：它把对拍页原有的那些字符串生产者
+（`introText` / `compileDetail` / `detailOf`，以及被探针按字节断言的 `SampleDiff.contextBlock`）
+**一个字都不改**地切开——开头连续的 `键：值` 行变键值行，每个 `—— 标题 ——` 开一节。
+于是 879 行文件里的字符串逻辑没动，呈现换了。`BlockText.splitHeader` 是同一条路的纯函数版。
+
+`evalSections` / `indexSections` 两个页面用自己的结构化入口（评测页有真的字段，没必要再拼字符串再拆）。
+
+**判定配色改成明暗两套**（`VerdictColors.kt`）—— 这条是探针先发现的：
+原来 13 个裸 `java.awt.Color` 是从洛谷抄的深色主题值，`#001277`、`#0e1d69`、`#262626` 在白底上糊掉；
+但**反过来在深色主题下它们同样几乎看不见**（与列表底色对比度 1.1~1.8）。
+也就是说这个 bug 从 1.0 就在，只是两套主题下各瞎一部分，谁也没当成 bug。
+现在表在 `PALETTES` 里、`verdictColorOf` 从表构造 `JBColor`，另开一个 `verdictPalette(code)` 给探针取值
+（JBColor 解析成哪一套取决于运行时主题，探针拿不到那个上下文，只能把两套分别验）。
+`VerdictSquareIcon` 改圆角 + 描边，「还没结果」用空心圈——实心灰块会被当成一个真判定。
+`TestCaseSquares` 里手搓的亮度公式换成 `ColorUtil.isDark()`。
+
+**其余 chrome**：列表行分段着色（题号加粗、`#rid` 灰小、状态按判定染色），去掉 `|` 和 `→`；
+四个列表加 `setEmptyText`；评测/题目/搜索三个列表加 `ListSpeedSearch`（敲题号即定位）；
+按钮加 `AllIcons`；拉取/搜索/提交/登录四页的状态行加 `setStatus(text, error)`（错误色），
+搜索页原来把多行结果塞进单行 `JBLabel` 的地方改成「取首行 + 全文进 tooltip」；
+普通 `FlowLayout` 全部换 `WrapLayout`；`LoginPanel` 那两个 `columns=40` 收到 20、
+`__client_id（浏览器 F12 → …）` 那串长标签挪进 tooltip（窄侧边栏里它自己就被裁）。
+
+**预览页**：样式从 `PreviewPanel.themeCss()` 的字符串拼接挪进 `resources/css/preview.css`，
+Kotlin 只负责把 `@BG@`/`@FG@`/`@ACCENT@` 等按当前主题替换；字号字体改从 `UIUtil.getLabelFont()` 取
+（原来写死 13px，在放大字体的屏幕上小一圈）；难度/时限/内存/分数那组改成 `.chip` 徽章条，
+题解作者行同理。**CSS 只用 CSS 2.1 子集**——无 JCEF 时同一份样式要喂 `JEditorPane`，
+它遇到 flex/grid 会静默降级，排版塌了没人报错（这条写进文件头注释了）。
+
+### 他要的那条：提交文件名判断不再靠猜
+
+`CompileErrorLocator.choose()` 加 `localFileName` 入参，判定分三层：
+① 调用方给的真实文件名（对拍页传 `target.sourcePath` 的 basename，评测页传 `"$pid.cpp"`）；
+② OJ 常见名名单（`src`/`Main.cpp`/`P\d+.cpp`…）；
+③ 兜底：名字全对不上，但行号落在提交代码长度内、且路径不像头文件/库
+（不以 `<` 开头、不含 `/include/`、`/usr/`、`/bits/`，后缀不是 `.h/.hpp/...`，也不是 `.s`/`.o` 这类中间产物）。
+tooltip 上走兜底会写明「诊断里写的是 xxx，按你提交的那份文件跳」——用了兜底要看得见。
+
+一个容易写错的点：**先卡行号再分层**。反过来（先分层再卡行号）会让「本地名字那条恰好超出代码长度」
+把本来能跳的兜底那条一起废掉，探针里专门留了一条测这个顺序。
+
+### 探针
+
+新增 `Ui173Probe`（41 条：`splitHeader` 8 条、`sectionsFromText` 12 条、`evalSections` 8 条、
+`indexSections` 6 条、配色对比度 6 条 + 等宽字体）与 `Layout173Probe`（真 `DetailPanel` 装进 `JFrame`，
+460/240/170 三档各测「被裁组件 = 0」）。**合计 296 条全绿**（含 1.7.2 那 121 条与更早的 101 条回归）。
+
+两条踩到的环境事实，记下来省下次的时间：
+① 探针里用平台组件（`SimpleColoredComponent`、`JBScrollPane`）必须加
+`--add-opens java.desktop/javax.swing=ALL-UNNAMED`（还有 `javax.swing.plaf.basic`、`java.awt`），
+否则 `InaccessibleObjectException`；
+② macOS 上 `JBScrollPane` 会走 `MacScrollBarUI` → JNA，需要
+`-Djna.boot.library.path=<CLion>/lib/jna/aarch64 -Djna.nosys=true -Djna.noclasspath=true`，
+那个 `.jnilib` 不在任何 jar 里，光加 classpath 没用。
+
+也有三条断言是**我自己写错预期**：`sectionsFromText` 从「一节」改成「多节」之后，
+老断言还在要求 `size()==1`。这种 FAIL 是有用的——它说明新行为比原先写的预期更好，改断言而不是改代码。
+
+### 只有他眼睛能定的
+
+浅色 / 深色两套主题下 13 档判定的实际观感；预览页新 CSS（含无 JCEF 兜底那条路）；
+速度搜索的输入手感；详情区现在能用鼠标选文字（这条改了 `isFocusable`，焦点/滚动行为可能跟着变）；
+以及「土不土」本身——这是他的判断，不是断言能覆盖的。
+
+
 
 

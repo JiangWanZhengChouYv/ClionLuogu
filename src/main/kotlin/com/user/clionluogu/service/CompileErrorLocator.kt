@@ -23,18 +23,38 @@ enum class JumpMiss {
     NO_LOCAL_FILE,
 }
 
-/** [CompileErrorLocator.choose] 的结果：要么有 [hit]（此时 [miss] 为 [JumpMiss.NONE]），要么只有原因。 */
-data class JumpChoice(val hit: CompileHit?, val miss: JumpMiss, val detail: String)
+/**
+ * 这一条是按哪一层认下来的：
+ * [LOCAL_NAME] 诊断里的文件名就是调用方给的那份源文件（最可信）；
+ * [WHITELIST] 命中 OJ 常见提交名（`src`、`Main.cpp`、`P1001.cpp`…）；
+ * [FALLBACK] 名字都对不上，但行号在你提交的代码长度内、且不像头文件/库路径 —— 兜底认。
+ */
+enum class JumpSource { LOCAL_NAME, WHITELIST, FALLBACK }
+
+/**
+ * [CompileErrorLocator.choose] 的结果。
+ * 要么有 [hit]（此时 [miss] 为 [JumpMiss.NONE]，[via] 说明是怎么认下来的），要么只有原因。
+ */
+data class JumpChoice(
+    val hit: CompileHit?,
+    val miss: JumpMiss,
+    val detail: String,
+    val via: JumpSource? = null,
+)
 
 /**
  * 从编译诊断纯文本里挑出「该跳过去的那一行」。
  *
- * 只做名字白名单，不做黑名单：诊断里大量行号指向的是标准库内部
- * （`<vector>`、`/usr/include/c++/.../bits/stl_vector.h`），跳过去既没意义又会让人以为
- * 错在自己那几行。白名单只认竞赛提交常见的那几种文件名，其余一律不跳。
+ * 判定分三层（[JumpSource]），**从最可信到兜底**：
+ * ① 调用方把自己那份源文件的真实名字传进来（对拍页知道编的就是 `Pxxx.cpp`，评测页是 `"$pid.cpp"`），
+ *    诊断里的文件名与它相同 → 直接认；
+ * ② 命中 OJ 常见提交名名单；
+ * ③ 名字全对不上，但行号落在提交的代码长度内、且路径不像头文件/标准库 → 认。
+ * 洛谷把源码编成 `/tmp/compiler_xxx/src` 这类名字，只靠名单就会一轮一轮地补；
+ * 有了 ① 和 ③，换编译器、换 OJ 命名都不用再改代码。
  *
  * 真正要打开的文件**永远由 pid 推出项目根下的 `Pxxx.cpp`**，不会去开诊断里写的那个路径——
- * 洛谷的编译路径是它服务器上的临时名（`Main.cpp`），拿它当本地路径既不合法也不安全。
+ * 洛谷的编译路径是它服务器上的临时名，拿它当本地路径既不合法也不安全。
  */
 object CompileErrorLocator {
 
@@ -68,6 +88,9 @@ object CompileErrorLocator {
      * 标准库那一路径的 basename（`vector`、`stl_vector.h`、`basic_string.h`…）都不在这个表里。
      */
     private val BARE_SUBMISSION_NAMES = setOf("src", "main", "program", "submission")
+
+    /** 兜底层允许的后缀（没有后缀也放行，OJ 的临时名就长那样）。 */
+    private val SOURCE_EXTS = setOf("cpp", "cc", "cxx", "c", "cu")
 
     /**
      * 逐行解析诊断。[text] 为空返回空表。
@@ -139,31 +162,87 @@ object CompileErrorLocator {
     }
 
     /**
-     * 挑一条用来跳的，并说清为什么挑不成。[pickJumpTarget] 的每一项闸门都在这里带上原因。
+     * 挑一条用来跳的，并说清为什么挑不成 / 是怎么认下来的。
      *
      * [submittedLineCount] 为 null 表示行数未知（不卡上界）；超出上界说明诊断指向的是
      * 宏展开或模板实例化产生的行，本地那份文件里根本没有。
      * [hasLocalSource] 为 false（本地 `Pxxx.cpp` 已经不在了，或者被改名/挪走）时不给跳转目标。
+     * [localFileName] 是调用方那份源文件的**文件名**（不是全路径），命中它是最可信的一层；
+     * 传 null 就退化成「只靠名单 + 兜底」，与 1.7.2 的行为一致。
      */
     @JvmStatic
-    fun choose(text: String?, submittedLineCount: Int?, hasLocalSource: Boolean): JumpChoice {
+    @JvmOverloads
+    fun choose(
+        text: String?,
+        submittedLineCount: Int?,
+        hasLocalSource: Boolean,
+        localFileName: String? = null,
+    ): JumpChoice {
         if (!hasLocalSource) return JumpChoice(null, JumpMiss.NO_LOCAL_FILE, "")
         if (text.isNullOrEmpty()) return JumpChoice(null, JumpMiss.NO_DIAGNOSTIC, "")
         val all = parseAll(text)
         if (all.isEmpty()) return JumpChoice(null, JumpMiss.NO_LOCATION, firstLineSample(text))
-        val ours = all.filter { isSubmissionFile(it.path) }
-        if (ours.isEmpty()) {
+        val accepted = all.mapNotNull { hit -> accept(hit, localFileName)?.let { hit to it } }
+        if (accepted.isEmpty()) {
             val first = all.first()
-            val basename = first.path.replace('\\', '/').substringAfterLast('/')
-            return JumpChoice(null, JumpMiss.FOREIGN_FILE, "$basename:${first.line}")
+            return JumpChoice(null, JumpMiss.FOREIGN_FILE, "${basename(first.path)}:${first.line}")
         }
-        val inRange = ours.filter { submittedLineCount == null || it.line <= submittedLineCount }
+        val inRange = accepted.filter { submittedLineCount == null || it.first.line <= submittedLineCount }
         if (inRange.isEmpty()) {
-            val smallest = requireNotNull(ours.minByOrNull { it.line })
-            return JumpChoice(null, JumpMiss.LINE_OUT_OF_RANGE, "${smallest.line}/$submittedLineCount")
+            val smallest = requireNotNull(accepted.minByOrNull { it.first.line }).first.line
+            return JumpChoice(null, JumpMiss.LINE_OUT_OF_RANGE, "$smallest/$submittedLineCount")
         }
-        return JumpChoice(inRange.firstOrNull { it.isError } ?: inRange.first(), JumpMiss.NONE, "")
+        // 先卡行号再分层：不然「本地名字的那条恰好超范围」会把能跳的其它条一起废掉
+        val via = listOf(JumpSource.LOCAL_NAME, JumpSource.WHITELIST, JumpSource.FALLBACK)
+            .firstOrNull { level -> inRange.any { it.second == level } }
+        val pool = inRange.filter { it.second == via }.map { it.first }
+        val hit = requireNotNull(pool.firstOrNull { it.isError } ?: pool.firstOrNull())
+        return JumpChoice(hit, JumpMiss.NONE, basename(hit.path), via)
     }
+
+    /** 这一条落在哪一层；不像自己的代码就返回 null。 */
+    private fun accept(hit: CompileHit, localFileName: String?): JumpSource? {
+        val name = basename(hit.path)
+        return when {
+            localFileName != null && name.equals(localFileName, ignoreCase = true) -> JumpSource.LOCAL_NAME
+            isSubmissionFile(hit.path) -> JumpSource.WHITELIST
+            looksLikeLibrary(hit.path) -> null
+            else -> JumpSource.FALLBACK
+        }
+    }
+
+    /**
+     * 一眼就不像「自己那份提交」的路径：尖括号里的头、系统/SDK 目录、头文件后缀、
+     * 以及 `.s` / `.o` 这类编译中间产物。兜底层只放行剩下的（含没有后缀的 OJ 临时名）。
+     */
+    private fun looksLikeLibrary(path: String): Boolean {
+        val normalized = path.replace('\\', '/')
+        val name = basename(normalized)
+        if (name.isBlank() || name.startsWith("<")) return true
+        if (normalized.contains("/include/") || normalized.contains("/usr/") ||
+            normalized.contains("/Library/") || normalized.contains("/bits/")
+        ) {
+            return true
+        }
+        val dot = name.lastIndexOf('.')
+        val ext = if (dot < 0) "" else name.substring(dot + 1).lowercase()
+        return when (ext) {
+            "" -> false
+            in SOURCE_EXTS -> false
+            else -> true
+        }
+    }
+
+    /** 走了兜底才跳成的话，给一句说明：让用户看得见「名字其实没对上」，而不是以为插件在瞎跳。 */
+    @JvmStatic
+    fun hitNote(choice: JumpChoice): String =
+        if (choice.via == JumpSource.FALLBACK && choice.hit != null) {
+            "（诊断里写的是 ${choice.detail}，按你提交的那份文件跳）"
+        } else {
+            ""
+        }
+
+    private fun basename(path: String): String = path.replace('\\', '/').substringAfterLast('/')
 
     /** 挑一条用来跳的；判据全见 [choose]，这里只取结果。 */
     @JvmStatic
