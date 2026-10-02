@@ -15,10 +15,10 @@
   一般不需要手改。
 -->
 <plugins>
-              <plugin
+                <plugin
           id="com.jiangwanzhengchouyv.clionluogu"
-          url="https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@v1.7.0/dist/ClionLuogu-1.7.0.zip"
-          version="1.7.0">
+          url="https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@v1.7.1/dist/ClionLuogu-1.7.1.zip"
+          version="1.7.1">
     <idea-version since-build="243" />
     <name>ClionLuogu</name>
     <description><![CDATA[在 CLion 里一站式刷洛谷：拉题、预览、对拍、提交、看评测。<br/>
@@ -35,6 +35,6 @@
   <li>题目 AC 后弹窗询问是否删除本题生成的 <code>Pxxx.cpp</code> / <code>Pxxx.md</code> / <code>Pxxx_samples/</code>，可在设置里关掉</li>
 </ul>
 非官方工具：仅使用你自己的登录态，不会自动登录、不会绕过验证码；打卡需要你点一下确认。]]></description>
-    <change-notes><![CDATA[<b>1.7.0</b>：新增<b>「对拍」页签</b>——点一下先<b>现场编译</b>项目根的 <code>Pxxx.cpp</code>，再把拉题落盘的 <code>Pxxx_samples/Pxxx_N.in</code> 逐组喂进去与 <code>.out</code> 比对；不一致时给出首个差异行与两侧上下文、退出码与 stderr，判定颜色与「评测」页一致（通过绿 / 不通过红 / RE 紫 / TLE 蓝 / 编译错红）。编译器按 PATH 找 <code>clang++</code> / <code>g++</code> / <code>c++</code>，Windows 还会看 IDE 自带的 MinGW，设置里可填绝对路径覆盖；<b>默认模板不再依赖 <code>bits/stdc++.h</code></b>（macOS 的 clang + libc++ 根本没有那个头，实测 <code>fatal error: file not found</code>），改成 <code>&lt;iostream&gt;</code>、<code>&lt;vector&gt;</code>、<code>&lt;algorithm&gt;</code> 等两边都有的真实标准头——已经拉下来的老文件若第一行还写着 bits，本地编译会失败并在诊断里提示怎么改。编辑器里那份没保存会先保存再编，产物写在系统临时目录、不进你的仓库，也不需要先手动 Build。同时新增<b>评测未通过通知</b>：判成非 AC 终态（WA / RE / TLE / MLE / CE…）时发一条 balloon，点「查看」跳到评测页并选中该条记录；AC 仍只弹 1.6.0 的清理询问，不叠加通知。开关与编译器、编译参数都在 <code>Settings | Tools | 洛谷拉题</code>。两个做不到的：不复用你项目里的 CMake 配置（自定义宏、多文件、第三方库会报编译或链接错），不做特殊判定（SPJ）题的比较]]></change-notes>
+    <change-notes><![CDATA[<b>1.7.1</b>：对拍页补三件小事。<b>存反例</b>：失败那组点一下，就把它的输入、期望输出与实际输出（有 stderr 再加一份）一字节不改地写到项目根的 <code>Pxxx_cases/</code>，可以直接喂调试器或本地重跑 —— 详情区的差异上下文只截 ±20 行、单行还截 200 字符，那是用来看的，不是用来调的。<b>只看失败</b>过滤，配一行「已跑 N 组 · 失败 M 组」的计数。窄侧边栏里列表与详情<b>自动改成上下排</b>（宽度回到 460 像素以上又换回左右），耗时单独一列对齐；「评测」页的分栏也跟着换向]]></change-notes>
   </plugin>
 </plugins>
