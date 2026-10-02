@@ -27,31 +27,12 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
          * 内置默认 C++ 竞赛模板。
          *
          * 不用 `#include <bits/stdc++.h>`：那是 GNU/libstdc++ 专有的，macOS 的 clang + libc++
-         * 直接 `file not found`。下面这些头在 libc++ 与 libstdc++ 两边都存在（逐项实测过），
-         * 少而常用，不够时自己在设置里加。
+         * 直接 `file not found`。只留最常用的三个头，用到别的自己在设置里加。
          */
         const val DEFAULT_CODE_TEMPLATE: String = (
-            "#include <algorithm>\n" +
-                "#include <bitset>\n" +
-                "#include <climits>\n" +
-                "#include <cmath>\n" +
-                "#include <cstdio>\n" +
-                "#include <cstdlib>\n" +
-                "#include <cstring>\n" +
-                "#include <deque>\n" +
-                "#include <functional>\n" +
-                "#include <iomanip>\n" +
-                "#include <iostream>\n" +
-                "#include <map>\n" +
-                "#include <numeric>\n" +
-                "#include <queue>\n" +
-                "#include <set>\n" +
-                "#include <stack>\n" +
-                "#include <string>\n" +
-                "#include <unordered_map>\n" +
-                "#include <unordered_set>\n" +
-                "#include <utility>\n" +
+            "#include <iostream>\n" +
                 "#include <vector>\n" +
+                "#include <algorithm>\n" +
                 "using namespace std;\n" +
                 "\n" +
                 "int main() {\n" +

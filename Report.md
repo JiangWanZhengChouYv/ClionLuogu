@@ -552,10 +552,12 @@ val missingSource = t.sourcePath?.let { "找不到源文件：$it" }   // 错：
 面板详情区那句「兼容头：已注入…」、`createTempDir()`（唯一使用者没了，一并删）。
 `compile()` 现在就是 `<compiler> <设置参数> -o <产物> <源文件>`，少一次子进程，编译从 428 ms 降到 **328 ms**。
 
-新 `DEFAULT_CODE_TEMPLATE`：21 个真实标准头（`algorithm bitset climits cmath cstdio cstdlib cstring
+新 `DEFAULT_CODE_TEMPLATE`：先按「两边都有的常用头」列了 21 个（`algorithm bitset climits cmath cstdio cstdlib cstring
 deque functional iomanip iostream map numeric queue set stack string unordered_map unordered_set utility vector`），
 **逐个用 `clang++ -fsyntax-only -include <头>` 实测过在 libc++ 上都在**（`climit`、`scoped_lock`、`malloc.h`
-这类「看着像其实没有」的名没进来），`using namespace std;` + `main` 骨架不变。
+这类「看着像其实没有」的名没进来）。他看完直接否掉：**「太多啦，就留三个最常用的」**——最终模板只有
+`<iostream> <vector> <algorithm>`，用到别的自己在设置里加。探针因此多了一条
+「模板只含 3 个 include」的断言，防它以后又膨胀。
 `ProblemFileGenService` 取的就是 `settings.codeTemplate`，所以只在用户没自定义模板时生效——自定义过 bits 的仍按他自己的。
 
 老文件不能不管：项目里已经存在的 `Pxxx.cpp` 第一行就是 bits。现在不塞兼容头，本地必然

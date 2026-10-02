@@ -177,8 +177,8 @@ object CompilerService {
     private fun withBitsHint(text: String): String =
         if (!text.contains("bits/stdc++.h")) text else text +
             "\n\n提示：这台机器的编译器没有 bits/stdc++.h（那是 GNU/libstdc++ 的东西）。" +
-            "\n把那一行换成真实存在的标准头就行，例如 <iostream> <vector> <algorithm> <string> <cmath> <queue> <map> <set>；" +
-            "\n新拉的题目模板已经改成这种写法了。"
+            "\n把那一行换成真实存在的标准头就行，例如 <iostream> <vector> <algorithm>，用到别的再补；" +
+            "\n新拉的题目模板只有这三个头。"
 
     /** 产物运行时需要额外挂到 `PATH` 的目录：编译器所在目录（Windows 的 MinGW DLL 就在旁边）。 */
     fun runtimePathEntries(compilerExe: File): List<File> = listOfNotNull(compilerExe.parentFile)
