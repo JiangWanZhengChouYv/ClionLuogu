@@ -15,10 +15,10 @@
   一般不需要手改。
 -->
 <plugins>
-                  <plugin
+                    <plugin
           id="com.jiangwanzhengchouyv.clionluogu"
-          url="https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@v1.7.2/dist/ClionLuogu-1.7.2.zip"
-          version="1.7.2">
+          url="https://cdn.jsdelivr.net/gh/JiangWanZhengChouYv/ClionLuogu@v1.7.3/dist/ClionLuogu-1.7.3.zip"
+          version="1.7.3">
     <idea-version since-build="243" />
     <name>ClionLuogu</name>
     <description><![CDATA[在 CLion 里一站式刷洛谷：拉题、预览、对拍、提交、看评测。<br/>
@@ -37,6 +37,6 @@
   <li>题目 AC 后弹窗询问是否删除本题生成的 <code>Pxxx.cpp</code> / <code>Pxxx.md</code> / <code>Pxxx_samples/</code> / <code>Pxxx_cases/</code>，可在设置里关掉</li>
 </ul>
 非官方工具：仅使用你自己的登录态，不会自动登录、不会绕过验证码；打卡需要你点一下确认。]]></description>
-    <change-notes><![CDATA[<b>1.7.2</b>：三件事。<b>编译错误一键跳行</b>——对拍页的编译诊断与评测页的 CE 详情旁多了一个「跳到第 N 行」，点开项目根的 <code>Pxxx.cpp</code> 直接落在第一条 error 上；只认提交文件（<code>Pxxx.cpp</code>、OJ 常用的 <code>Main.cpp</code>）那种行号，标准库内部的（模板实例化、<code>&lt;vector&gt;</code> 里第 572 行）不跳，本地文件已被改名 / 挪走、或行号超出当次提交的代码长度时<b>按钮直接不给</b>，宁可少跳也不跳错。<b>评测显示总得分</b>——详情区、逐子任务方块下方与「未通过」通知都带上「各子任务得分合计 N 分」；<b>取不到分数时什么都不显示</b>（评测进行中的子任务没有分数，硬写会写成骗人的 0 分；全 WA 时的 0 分照显示）。<b>新增第 8 个页签「题目」</b>——按题号列出项目根下的 <code>Pxxx.cpp</code> / <code>Pxxx.md</code> / <code>Pxxx_samples/</code> / <code>Pxxx_cases/</code> 与最近一次评测结果（颜色沿用评测页），勾「只看未提交」把提交过却还堆着的题挑出来，选中点「删除本题文件」：弹<b>一次</b>确认、把实际要删的东西列清楚再动手，<b>提交记录与评测历史保留</b>；只认这四个精确名字，改过名或放进子目录的文件不碰。顺带：AC 后的自动清理现在也认 <code>Pxxx_cases/</code>（反例目录），且目录套多层也能删净（原先只脱一层）。<b>修一个真 bug</b>：编译错误详情一直读错了字段（洛谷把它放在 <code>record.detail.compileResult.message</code>，代码读的是顶层 <code>compileErrorMessage</code>），所以评测页那块「编译错误」从来是空的、跳行按钮也就从来没亮过；顺带这个字段以前也不随提交记录持久化，重启就丢。两处都修了，启动时还会给「状态是 CE 却没有详情」和停在「进行中」的老记录补拉一次（不弹通知、不弹清理框）。灰按钮的 tooltip 也会说清卡在哪一道闸门。诊断行的解析兼容中文评测机（<code>错误：</code>、全角冒号、「致命错误」）以及洛谷把源码编成的那个<b>没有扩展名</b>的文件名 <code>/tmp/compiler_xxx/src</code>]]></change-notes>
+    <change-notes><![CDATA[<b>1.7.3</b>：把界面重做了一遍（功能不变）。<b>详情区不再是一大坨纯文本</b>：评测 / 对拍 / 题目三页改成<b>分节</b>显示——键值行（标签弱化、值正常）+ 每节一个标题线，编译错误、编译器输出、提交的代码各自一块<b>等宽、不折行、能横向滚、能用鼠标选</b>的文本（以前诊断被自动折行切成 <code>In funct</code> <code>ion</code> 那种断词，也没法复制）。<b>浅色主题下的判定配色修好了</b>：以前 13 种状态码是写死的深色值，<code>#001277</code>、<code>#262626</code> 那几档在白底上跟背景糊在一起；现在每种都按明暗两套给色，方块改成圆角带描边，「还没结果」用空心圈而不是实心灰块。列表行也分段着色（题号加粗、记录号灰小、状态按判定染色），不再用 <code>|</code> 和 <code>→</code> 拼一行；四个列表加了空态提示，评测 / 题目 / 搜索结果列表<b>直接敲题号就能定位</b>。按钮配上图标，出错的状态行染成错误色。预览页（题面 / 题解）的样式从 Kotlin 字符串挪进 <code>css/preview.css</code>，字号字体跟随 IDE，难度 / 限制那组改成徽章条，题解作者行同理。拉取 / 搜索 / 提交 / 登录四页里会在窄侧边栏被裁掉的排版一并修了。另外<b>「跳到出错行」认文件的方式改了</b>：以前靠一份 OJ 文件名名单（<code>Main.cpp</code>、<code>src</code>…补过两轮），现在三层判定——先比对插件自己编译 / 要打开的那个文件名，再查名单，最后兜底认「行号落在你提交的代码长度内、且不像头文件 / 标准库路径」的那条；走兜底时 tooltip 会说明]]></change-notes>
   </plugin>
 </plugins>
