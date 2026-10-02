@@ -582,4 +582,32 @@ zip 重新构建于 09:46。README / `plugin.xml` description + change-notes / `
 已知限制新增一条明说「bits 不做兼容，老文件自己换头」。
 另注：他那项目里 `P1001` 只有 1 组成对样例，所以列表里就 1 组，不是漏了。
 
+## 32. 1.7.0 发版
+
+用户确认测试完成后，照内置 `scripts/release.sh` 一路走完（`JAVA_HOME`=CLion JBR、`HTTP(S)_PROXY`=7890、
+`PATH` 带上 `/opt/homebrew/bin` 好让脚本找到 `gh`）：
+
+- 产物自检 `com.jiangwanzhengchouyv.clionluogu 1.7.0`（jar 名与内嵌 `<version>` 都对得上才继续）；
+- zip 入库 `dist/ClionLuogu-1.7.0.zip`（4.2M）→ main 推到 `16a1c4a`，tag `v1.7.0` 推上去；
+- Release 建立并置为 latest：<https://github.com/JiangWanZhengChouYv/ClionLuogu/releases/tag/v1.7.0>
+  （正文「本次更新」是从 `plugin.xml` 的 change-notes 里按 `<b>1.7.0</b>` 抓的，两处天然一致；
+  「功能一览」那段是脚本里写死的，本轮已把 7 个页签与「现场编译 + 三个头的模板」同步改掉）；
+- `updatePlugins.xml` 由脚本从**构建产物**取权威元数据重建（id / version / 描述 / 本版变更说明），
+  自带 XML 重新解析与断言，推到 `625b04c`；
+- jsDelivr purge 返回 `status: finished`，Cloudflare 与 Fastly 两家都刷了。
+
+**发布后我自己复核更新通道**（不信脚本的 echo，只信抓回来的数据）：
+
+- `.../ClionLuogu@main/updatePlugins.xml` → `version="1.7.0"`，
+  `url=".../ClionLuogu@v1.7.0/dist/ClionLuogu-1.7.0.zip"`（tag 固定，不受 main 后续提交影响）；
+- 该资产 URL `curl` → **HTTP 200，4415706 字节**；
+- 把线上那份 zip 拉回来拆开验：内层 `plugin.xml` 是 `<version>1.7.0</version>`，
+  jar 里 `compat` 条目数 **0** ——确认发出去的是「撤掉 bits、模板只留 iostream/vector/algorithm」那一版，
+  不是早先带兼容头的构建；
+- `gh release view v1.7.0` 附件列表含 `ClionLuogu-1.7.0.zip`。
+
+一点提醒：本轮 zip 与之前未发布的构建同为 1.7.0（`v1.7.0` tag 之前不存在，所以没有覆盖问题）；
+以后再遇到「同一版本号反复构建」，要么 bump，要么就像这轮靠行为差异认包
+（这轮的指纹：对拍页有「编译器：…」那一行，点「编译并对拍」会先出编译行）。
+
 
