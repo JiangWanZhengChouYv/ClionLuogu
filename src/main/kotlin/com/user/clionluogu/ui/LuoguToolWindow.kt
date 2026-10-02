@@ -5,7 +5,6 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.ui.ColoredListCellRenderer
-import com.intellij.ui.JBSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
@@ -110,7 +109,8 @@ class LuoguToolWindow(private val project: Project) {
         detailPane.add(detailTop, BorderLayout.NORTH)
         detailPane.add(JBScrollPane(detailArea), BorderLayout.CENTER)
 
-        val split = JBSplitter(false, 0.4f).apply {
+        // 窄侧边栏里左右两栏都挤，交给 AutoFlipSplitter 按宽度自动改成上下
+        val split = AutoFlipSplitter(0.4f).apply {
             firstComponent = listPane
             secondComponent = detailPane
             border = JBUI.Borders.empty(4)

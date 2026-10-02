@@ -49,7 +49,10 @@ object SampleCompareService {
     /** 跑之前先编译：`<compiler> <args> -o <Request.exe> <source>`。 */
     data class Compile(val compiler: File, val source: File, val args: List<String>)
 
-    /** 单组结果。[expectedPreview] / [actualPreview] 只在失败时非空（首个差异 + 局部上下文）。 */
+    /**
+     * 单组结果。[expectedPreview] / [actualPreview] 只在失败时非空（首个差异 + 局部上下文）；
+     * [actualOutput] 是完整 stdout，同样只在失败时留 —— 「存反例」要用它，通过的组不留，免得几 MB 白占内存。
+     */
     data class Result(
         val sample: Sample,
         val verdict: Verdict,
@@ -60,6 +63,7 @@ object SampleCompareService {
         val expectedPreview: String? = null,
         val actualPreview: String? = null,
         val note: String? = null,
+        val actualOutput: String? = null,
     )
 
     /** 一轮对拍的汇总。[compile] 非空表示这一轮是先编译再跑的（失败时 [results] 为空）。 */
@@ -223,7 +227,18 @@ object SampleCompareService {
             note: String? = null,
             expectedPreview: String? = null,
             actualPreview: String? = null,
-        ) = Result(sample, verdict, elapsed, exitCode, stderr, issue, expectedPreview, actualPreview, note)
+        ) = Result(
+            sample = sample,
+            verdict = verdict,
+            elapsedMs = elapsed,
+            exitCode = exitCode,
+            stderr = stderr,
+            issue = issue,
+            expectedPreview = expectedPreview,
+            actualPreview = actualPreview,
+            note = note,
+            actualOutput = if (verdict == Verdict.PASS) null else stdout.takeIf { it.isNotEmpty() },
+        )
 
         if (capture.overLimit) {
             return result(

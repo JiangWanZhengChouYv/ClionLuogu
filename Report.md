@@ -610,4 +610,59 @@ zip 重新构建于 09:46。README / `plugin.xml` description + change-notes / `
 以后再遇到「同一版本号反复构建」，要么 bump，要么就像这轮靠行为差异认包
 （这轮的指纹：对拍页有「编译器：…」那一行，点「编译并对拍」会先出编译行）。
 
+## 33. 1.7.1：存反例、只看失败、分栏自动换向
+
+他自己点的单（选项 2 + 4），并明确「这两个是 1.7.1」，不是 1.8.0。三件小事，每件都有一个不是那么显然的取舍：
+
+### 存反例：字节必须不改
+
+`CaseExportService` 把失败那组写到项目根 `{pid}_cases/`：`{pid}_{N}.in`、`{pid}_{N}.expected.out`、
+`{pid}_{N}.actual.out`（+ 有 stderr 时再多一个 `{pid}_{N}.stderr.txt`）。
+
+- **为什么还要做**：详情区的差异上下文只截 ±20 行、单行截 200 字符 —— 那是给眼睛看的。想喂调试器或
+  本地重跑，必须有一份完整的输入与实际输出。所以 `SampleCompareService.Result` 新增 `actualOutput`，
+  **只在失败组留**（通过的组不留，白占内存），且天然被 `BoundedCapture` 的 1MB 上限兜住。
+- **不塞任何装饰**：文件里一旦加「这是 ClionLuogu 导出的」之类说明，就没法直接 `diff`、也没法直接
+  当输入喂回程序。为此把「写哪些文件、写什么字节」抽成纯函数 `plannedFiles(...)`（只碰 `java.io`），
+  `export()` 只负责落盘与刷 VFS —— 于是这部分的正确性**能离线断言到字节**：
+  `.in` 与原文件逐字节相等、期望输出原样复制、`actual` 用当场留的 stdout、
+  stderr 单独成文件（混进 actual 就毁了 diff）、没 stderr 就不产那个文件、
+  超时没输出也写一个**空的** actual（输入仍然可以拿去复现）。
+- **AC 清理不碰 `Pxxx_cases/`**：延续 1.6.0 的「只认三个精确名字，宁可少删」，写进已知限制，要删自己删。
+
+### 只看失败：过滤的是视图，不是数据
+
+`allRows` 是真数据，`listModel` 只是它的一个视图（`rebuildList()` 同步，并尽量保住原本选中的那一组，
+免得每刷新一次结果就跳回第一行）。判据抽成 `@JvmStatic keepsInOnlyFailed(verdict, isCompileRow)`，
+四条断言钉住：通过滤掉、MISMATCH/RE/TIMEOUT/输出超限都留、**`verdict == null`（还没跑/未执行）不留**
+（那不是失败，只是没跑）、编译行永远留（它失败时是唯一线索，成功时也是耗时来源）。
+旁边一行「已跑 N 组 · 失败 M 组」的计数，跑完之前显示「还没跑」。
+
+### 分栏自动换向：先查平台有没有这个开关
+
+先查再写：2024.3/2026.2 这版 `Splitter.LackOfSpaceStrategy` 只剩 `SIMPLE_RATIO` /
+`HONOR_THE_FIRST_MIN_SIZE` / `HONOR_THE_SECOND_MIN_SIZE` 三档，早先那对
+`hOnRightWidthValue` / `vOnTopHeightValue`（宽度不够自动改方向）已经没有了 —— 所以只能自己挂
+`componentResized`。语义用 `javap` 核实而不是猜：`JBSplitter(boolean vertical, float)` 直接把 boolean
+透传给 `Splitter.<init>(ZF)`，而评测页一直用的 `JBSplitter(false, 0.4f)` 呈现为左右排，
+故 `setOrientation(true)` = 上下排。阈值 460px 是经验值（比这窄，一行放不下「样例 12 + 判定 + 用时」）。
+`AutoFlipSplitter` 是 `JBSplitter` 的子类，对拍页与评测页都换成它，两页手感一致。
+
+耗时从 summary 文案里挪出来，改成 cellRenderer 里的定宽字段（`String.format("  %6d ms", …)`）——
+UI 字体里数字是等宽的，所以不依赖等宽字体也能对齐成一列。
+
+### 验证
+
+101 条离线断言全绿：39 纯逻辑（题号/差异/样例发现）+ **22 UI 判据与反例字节**（`blockingReason` 7 条
+含拿他真实项目跑的回归、`preservesResults` 3 条、`keepsInOnlyFailed` 4 条、`plannedFiles` 8 条）
++ 28 编译链路（含「默认模板原样编过」）+ 12 进程行为。其中新加的两条值得记：
+失败组必须留着完整 stdout（不然「存反例」是空的），通过组必须不留（不然内存白烧）。
+`gradle.properties` → 1.7.1，change-notes 顶部新增 `<b>1.7.1</b>` 条目（仍是单层 `<li>`，
+不嵌套 —— `release.sh` 用非贪婪 `<li>(.*?)</li>` 切分），README 的功能表 / 功能条目 / 使用步骤第 4 条 /
+已知限制（`_cases` 不被自动清理）与 `release.sh` 的功能一览同步改掉。
+
+真实 CLion 要验的是离线验不到的那部分：窄窗口拖到 460px 以下看有没有真的改成上下排、
+拖宽有没有换回来；失败行点「存反例」后 Project 视图里能不能立刻看到 `Pxxx_cases/`；
+勾「只看失败」时通过组有没有正确消失、编译失败时是不是只剩编译那一行。
+
 
