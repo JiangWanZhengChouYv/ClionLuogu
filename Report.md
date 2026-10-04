@@ -1279,3 +1279,32 @@ ls: /bin/true: No such file or directory      存在 /usr/bin/true
 `meta.py` 三条钉子），`javac` 失败会整体退出这条防呆本轮也第一次真的生效了
 （Java 侧 `Function0<Unit>` 的 lambda 写法编不过，runner 直接停下并说明「跑的是旧 class」）。
 
+## 41. 1.8.0 发版
+
+他说「发版，测试完成了」，跑的是仓库自带的 `scripts/release.sh`（没有手搓 gh 命令）。
+本机 `bash probes/run.sh` 先过一遍：**142（纯逻辑）+ 34（真 clang++ 真子进程）+ 50（元数据）+ 布局四档 0 裁切**。
+
+发出去的六步与复核（每条都是自己取回来的，不是看脚本回声）：
+
+| 项 | 结果 |
+| --- | --- |
+| Release | `v1.8.0`，标题 `ClionLuogu 1.8.0`，资产 `ClionLuogu-1.8.0.zip` 4,602,191 字节 |
+| 资产可达 | `curl -sIL` 跟完 302 → `HTTP/2 200`，`content-length` 与资产大小一致 |
+| 更新通道 | `raw.githubusercontent` 与 jsDelivr **两边都是 `version="1.8.0"`**（purge 返回 `status: finished`，CF/FY 都 true） |
+| 下载链 | 通道里的 url 指 `cdn.jsdelivr.net/...@v1.8.0/dist/ClionLuogu-1.8.0.zip`，实测 200 / 4,602,191 字节 |
+| 包内描述符 | `<version>1.8.0</version>`；`<depends>` 恰好两条（platform + jcef）；`<toolWindow>` 两条（`ClionLuogu left` / `ClionLuoguRun bottom`）；`compat/` **0 条**；`css/preview.css` 在 |
+| 新类 | 12 个全在包里（ProcessRunner / SelfTestService / SelfTestPanel / SelfTestInputService / LocalRunGates / SubmissionTracker / LuoguRunToolWindowFactory / ResourceMeter / ProblemLimits / LocalRunSignature / StatusRow / LimitFields） |
+| change-notes | release.sh 同款非贪婪正则切出的首条 = 1.8.0，长 1287 字符、**不嵌 `<li>`**（嵌了就会被截断） |
+| git | `5c37c71 release` + `f43203e chore: 仓库指向 v1.8.0` 都已推；`HEAD == origin/main`；tag `v1.8.0` 在远端 |
+
+这一版的三件事：**窗口分家**（左题目栏 6 页签 / 底部运行栏 3 页签）、**自测**（手打输入跑一份，输入按题号记住、每次重编、不比期望输出）、
+**可设时空上限**（默认取 `Pxxx.md` 那两行；内存实测外部 `time`，量不到就显示但写明不生效，判「超内存」借评测页 MLE 的颜色）。
+附带修的：提交记账脱离评测页（原来从底部提交而左侧窗口没开过会整个不落盘）、拉完题不再报「项目根没有 Pxxx.cpp」、
+时限/内存两个字段改不动（`/bin/true` 不存在 + 只在失焦才标记改过 + 一段死代码带走了监听）。
+
+**探针这一轮最大的收获不是新增断言，是抓出两种假绿**：`javac` 失败后 runner 照旧跑旧 class 报「全绿」；
+以及环境依赖的检查写成 `SKIP` 时，九条断言静默跳过而末尾照样「33 通过」。两条都已经改成硬失败。
+
+只能他在 IDE 里确认的（发版后照旧）：左侧栏第一次要不要手动拖；底部窗口默认高度下三个页签是不是一进来就看得见内容；
+明暗两套主题的判定颜色；预览页新 CSS 与无 JCEF 兜底；真实 CE 的跳行；超内存那行与孤儿进程（递归杀只有真 IDE 能验）。
+
