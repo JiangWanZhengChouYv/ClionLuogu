@@ -20,6 +20,7 @@ import com.user.clionluogu.service.JudgeNotifyService
 import com.user.clionluogu.service.JudgePollingService
 import com.user.clionluogu.service.LuoguActions
 import com.user.clionluogu.service.ScoreTotals
+import com.user.clionluogu.service.SubmissionTracker
 import com.user.clionluogu.storage.SubmissionHistoryService
 import com.user.clionluogu.storage.toStatus
 import java.awt.BorderLayout
@@ -199,8 +200,8 @@ class LuoguToolWindow(private val project: Project) {
         (judging + ceWithoutText).distinct().forEach { entry ->
             JudgePollingService.startPolling(
                 rid = entry.rid,
-                onUpdate = { st -> updateSubmission(entry.rid, st, quiet = true) },
-                onDone = { st -> updateSubmission(entry.rid, st, quiet = true) },
+                onUpdate = { st -> SubmissionTracker.applyStatus(project, entry.rid, st, quiet = true) },
+                onDone = { st -> SubmissionTracker.applyStatus(project, entry.rid, st, quiet = true) },
                 onError = { },
             )
         }
@@ -222,6 +223,9 @@ class LuoguToolWindow(private val project: Project) {
 
     /**
      * 更新某 rid 的状态并刷新列表与详情（调用方需在 EDT，或在本窗口回调场景由 [runOnEdt] 切回）。
+     *
+     * **只管界面**：持久化在 [SubmissionTracker.applyStatus] 里无条件做（提交页搬到底部窗口后，
+     * 这里可能压根不存在），别再在这一行偷偷写盘。
      *
      * [quiet] = true 用于重启后补轮询的老记录：那已经是**过期的跃迁**，
      * 再弹清理模态框或失败通知只会莫名其妙，只把数据刷新回来即可。
@@ -251,46 +255,27 @@ class LuoguToolWindow(private val project: Project) {
                 JudgeNotifyService.notifyFailure(project, entry.pid, status)
             }
         }
-        SubmissionHistoryService.getInstance(project).update(rid, status)
     }
 
     /**
-     * 跟踪一次评测：写入持久化记录，在后台启动 [JudgePollingService.startPolling] 轮询该 rid，
-     * 并将 onUpdate/onDone/onError 回调切回 EDT，实时更新提交历史与详情（终态仍保留结果）。
+     * 轮询本身出错（网络 / 解析）：把原因写进这条记录并刷新界面。
+     *
+     * 不写持久化——那是 [SubmissionTracker] 的事，这里只负责「看得见的失败」。
      */
-    fun trackSubmission(pid: String, rid: String, lang: String = "", code: String = "") {
-        addSubmission(pid, rid, lang, code)
-
-        val record = SubmissionHistoryService.Record().apply {
-            this.pid = pid
-            this.rid = rid
-            this.submitTime = System.currentTimeMillis()
-            this.lang = lang
-            this.code = code
+    fun markPollError(rid: String, error: Throwable) {
+        runOnEdt {
+            val entry = entries.firstOrNull { it.rid == rid } ?: return@runOnEdt
+            entry.status = SubmissionStatus(
+                rid = rid,
+                statusText = "轮询出错",
+                compileError = error.message ?: error.javaClass.simpleName,
+            )
+            val idx = entries.indexOf(entry)
+            if (idx >= 0 && idx < listModel.size()) {
+                listModel.set(idx, entry)
+            }
+            if (entry === selectedEntry()) renderDetail(entry)
         }
-        SubmissionHistoryService.getInstance(project).add(record)
-
-        // 同一 rid 的旧轮询会被 startPolling 取消，不同 rid 可并发轮询。
-        JudgePollingService.startPolling(
-            rid = rid,
-            onUpdate = { st -> updateSubmission(rid, st) },
-            onDone = { st -> updateSubmission(rid, st) },
-            onError = { t ->
-                runOnEdt {
-                    val entry = entries.firstOrNull { it.rid == rid } ?: return@runOnEdt
-                    entry.status = SubmissionStatus(
-                        rid = rid,
-                        statusText = "轮询出错",
-                        compileError = t.message ?: t.javaClass.simpleName,
-                    )
-                    val idx = entries.indexOf(entry)
-                    if (idx >= 0 && idx < listModel.size()) {
-                        listModel.set(idx, entry)
-                    }
-                    if (entry === selectedEntry()) renderDetail(entry)
-                }
-            },
-        )
     }
 
     fun clearHistory() {

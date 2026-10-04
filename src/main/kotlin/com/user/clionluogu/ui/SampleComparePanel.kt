@@ -23,10 +23,13 @@ import com.user.clionluogu.service.CompileErrorLocator
 import com.user.clionluogu.service.CompileHit
 import com.user.clionluogu.service.CompilerService
 import com.user.clionluogu.service.JumpMiss
+import com.user.clionluogu.service.LocalRunSignature
 import com.user.clionluogu.service.LuoguActions
 import com.user.clionluogu.service.SampleCompareService
 import com.user.clionluogu.service.SampleCompareService.Verdict
+import com.user.clionluogu.service.ResourceMeter
 import com.user.clionluogu.service.SampleDiff
+import com.user.clionluogu.service.ProblemLimits
 import com.user.clionluogu.service.SampleSetService
 import com.user.clionluogu.settings.LuoguSettings
 import java.awt.BorderLayout
@@ -46,6 +49,7 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.ListSelectionModel
+import javax.swing.Timer
 import javax.swing.ScrollPaneConstants
 
 /**
@@ -76,6 +80,8 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     )
 
     private val pidField = JBTextField()
+    private val timeField = JBTextField()
+    private val memoryField = JBTextField()
     private val reprobeButton = JButton("重新查找样例")
     private val pickCompilerButton = JButton("换编译器…")
     private val compilerLabel = JBLabel(" ")
@@ -102,6 +108,14 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     private var target: CompareTarget? = null
     private var targetPid: String? = null
     private var autoPid: String? = null
+
+    /** 他自己动过时空限制之后，就不再用题面值覆盖他的输入。 */
+    private var limitsTouched = false
+
+    /** 上一次探测时磁盘的现况；每秒比对一次，变了就重探（拉完题不用再手点）。 */
+    private var diskSignature: String? = null
+
+    private val ticker = Timer(TICK_MS) { tickDisk() }
     private var task: SampleCompareService.CompareTask? = null
     private var probing = false
     private var running = false
@@ -145,6 +159,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         }
         addNorth(JBLabel("题号（空=跟当前文件）"))
         addNorth(pidField)
+        addNorth(limitsRow())
         addNorth(buttonRow)
         addNorth(compilerLabel)
         addNorth(warnLabel)
@@ -252,6 +267,70 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     override fun addNotify() {
         super.addNotify()
         if (!running) probe()
+        ticker.start()
+    }
+
+    /** 面板离开容器就停表：不该在背后空转。 */
+    override fun removeNotify() {
+        ticker.stop()
+        super.removeNotify()
+    }
+
+    /**
+     * 磁盘变了就重探。
+     *
+     * 「刚拉完题」这件事和这里之间没有事件，而工具窗口 Content 是缓存的（`addNotify` 不一定再来一次），
+     * 所以只能自己盯：源文件长度 / mtime 或样例目录有变 → 重探，界面就不再挂着「项目根没有 Pxxx.cpp」。
+     */
+    private fun tickDisk() {
+        if (running || probing || project.isDisposed) return
+        val pid = currentPid()
+        if (!LuoguPidValidator.isValidPid(pid)) return
+        val signature = LocalRunSignature.of(
+            LocalRunSignature.sourceFile(project.basePath, pid),
+            LocalRunSignature.samplesDir(project.basePath, pid),
+        )
+        if (signature != diskSignature || target == null) probe()
+    }
+
+    /** 时空上限那一行：默认取题面（[applyTarget] 里填），动过就听他的。 */
+    private fun limitsRow(): JComponent {
+        timeField.columns = 5
+        timeField.emptyText.appendText("ms")
+        memoryField.columns = 5
+        memoryField.emptyText.appendText("MB")
+        val touch = object : FocusAdapter() {
+            override fun focusLost(e: FocusEvent) {
+                limitsTouched = true
+                target?.let { syncLimitHints(it) }
+            }
+        }
+        timeField.addFocusListener(touch)
+        memoryField.addFocusListener(touch)
+        val row = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
+        row.add(JBLabel("时限"))
+        row.add(timeField)
+        row.add(JBLabel("内存"))
+        row.add(memoryField)
+        return row
+    }
+
+    /** 把「这道题的限制」和「这台机器量不量得到内存」都写在字段自己的提示上。 */
+    private fun syncLimitHints(t: CompareTarget) {
+        val problemTime = t.problemLimits.timeMs
+        timeField.toolTipText = "每组样例的时限（毫秒）。留空或写错 = 用插件默认 " +
+            "${SampleCompareService.DEFAULT_TIMEOUT_MS} ms" +
+            (problemTime?.let { "；这道题题面写的是 $it ms" }.orEmpty())
+        val problemMemory = t.problemLimits.memoryMb
+        memoryField.isEnabled = t.meter != null
+        memoryField.toolTipText = if (t.meter == null) {
+            "这台机器量不到子进程峰值内存（没找到能解析的 time），所以不判 MLE。" +
+                (problemMemory?.let { "题面写的是 $it MB。" }.orEmpty())
+        } else {
+            "本地峰值内存上限（兆），超了判「超内存」。留空 = 不比内存" +
+                (problemMemory?.let { "；这道题题面写的是 $it MB" }.orEmpty()) +
+                "\n测量方式：${t.meter.tool.path} ${if (t.meter.flavor == ResourceMeter.Flavor.MAC_L) "-l" else "-v"}"
+        }
     }
 
     // ---- 探测 ----
@@ -291,7 +370,13 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             pid = pid,
             onResult = { result ->
                 probing = false
-                if (!project.isDisposed) applyTarget(pid, result)
+                if (!project.isDisposed) {
+                    diskSignature = LocalRunSignature.of(
+                        LocalRunSignature.sourceFile(result.projectBasePath ?: project.basePath, pid),
+                        LocalRunSignature.samplesDir(result.projectBasePath ?: project.basePath, pid),
+                    )
+                    applyTarget(pid, result)
+                }
             },
         )
     }
@@ -312,6 +397,11 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         target = t
         targetPid = pid
         updateCompilerLabel(t)
+        if (!limitsTouched) {
+            timeField.text = t.problemLimits.timeMs?.toString().orEmpty()
+            memoryField.text = t.problemLimits.memoryMb?.toString().orEmpty()
+        }
+        syncLimitHints(t)
 
         allRows.clear()
         previous[COMPILE_ROW]?.let { allRows.add(it) }
@@ -531,7 +621,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
     // ---- 编译 + 对拍 ----
 
-    private fun outputName(pid: String): String = if (isWindows()) "$pid.exe" else pid
+    private fun outputName(pid: String): String = CompilerService.executableName(pid)
 
     private fun outputFile(pid: String): String = File(buildDir, outputName(pid)).path
 
@@ -592,11 +682,14 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             exe = output,
             workDir = File(t.projectBasePath ?: project.basePath ?: buildDir.path),
             samples = samples,
+            timeoutMs = ProblemLimits.parseTimeMs(timeField.text, SampleCompareService.DEFAULT_TIMEOUT_MS),
             pathEntries = CompilerService.runtimePathEntries(compiler.file),
+            memoryLimitMb = ProblemLimits.parseMemoryMb(memoryField.text).takeIf { t.meter != null },
+            meter = t.meter,
             compile = SampleCompareService.Compile(
                 compiler = compiler.file,
                 source = File(sourcePath),
-                args = settings.compareCompilerArgs.split(' ').filter { it.isNotBlank() },
+                args = settings.compareCompilerArgList(),
             ),
         )
         insertCompileRow()
@@ -615,19 +708,8 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
      * （写意图自带读意图）。之前在 EDT 上裸调 `getDocument` 会被平台的线程断言拦下
      * （`Read access is allowed from inside read-action only`），2026.2 的 idea.log 里就是这样。
      */
-    private fun saveDocumentIfModified(file: File): String? {
-        val manager = FileDocumentManager.getInstance()
-        var saved: String? = null
-        ApplicationManager.getApplication().runWriteAction {
-            val vf = runCatching { LocalFileSystem.getInstance().findFileByIoFile(file) }.getOrNull()
-                ?: return@runWriteAction
-            if (!manager.isFileModified(vf)) return@runWriteAction
-            val document = manager.getDocument(vf) ?: return@runWriteAction
-            manager.saveDocument(document)
-            saved = vf.name
-        }
-        return saved?.let { "已保存 $it，" }
-    }
+    private fun saveDocumentIfModified(file: File): String? =
+        LuoguActions.saveIfModified(file)?.let { "已保存 $it，" }
 
     private fun insertCompileRow() {
         val existing = allRows.firstOrNull { it.sampleIndex == COMPILE_ROW }
@@ -761,6 +843,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             Verdict.MISMATCH -> result.issue?.let { SampleDiff.summarize(it) } ?: "输出不一致"
             Verdict.RUNTIME_ERROR -> "运行错误（${result.exitCode}）"
             Verdict.TIMEOUT -> "超时 ${request.timeoutMs} ms"
+            Verdict.MEMORY_LIMIT -> "超内存 ${result.peakMemoryMb ?: "?"} MB / 上限 ${request.memoryLimitMb ?: "?"} MB"
             Verdict.OUTPUT_TOO_MUCH -> "输出超限"
             Verdict.NOT_RUN -> "已取消"
             Verdict.ERROR -> "无法比对"
@@ -771,6 +854,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         Verdict.MISMATCH -> "输出不一致"
         Verdict.RUNTIME_ERROR -> "运行错误"
         Verdict.TIMEOUT -> "超时"
+        Verdict.MEMORY_LIMIT -> "超内存"
         Verdict.OUTPUT_TOO_MUCH -> "输出过多"
         Verdict.NOT_RUN -> "未执行"
         Verdict.ERROR -> "错误"
@@ -782,6 +866,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             append("样例 ").append(result.sample.index).append("  ").append(verdictText(result.verdict)).append('\n')
             result.issue?.let { append(SampleDiff.summarize(it)).append('\n') }
             append("用时 ").append(result.elapsedMs).append(" ms")
+            result.peakMemoryMb?.let { append("，峰值内存 ").append(it).append(" MB") }
             result.exitCode?.let { append("，退出码 ").append(it) }
             append('\n')
             result.note?.let { append(it).append('\n') }
@@ -803,6 +888,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         Verdict.MISMATCH -> 6
         Verdict.RUNTIME_ERROR -> 7
         Verdict.TIMEOUT -> 5
+        Verdict.MEMORY_LIMIT -> 4
         Verdict.OUTPUT_TOO_MUCH -> 3
         Verdict.ERROR -> 14
         else -> null
@@ -817,6 +903,9 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
         /** 没解析出可跳的行号时的按钮文案。 */
         private const val JUMP_LABEL = "跳到出错行"
+
+        /** 盯磁盘的间隔：与提交页、自测页同一条节奏。 */
+        private const val TICK_MS = 1000
 
         @JvmStatic
         fun preservesResults(previousPid: String?, currentPid: String): Boolean =
@@ -836,58 +925,16 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
          * 「还不能开始」的原因；返回 null 表示可以开始。
          *
          * 单独抽成不碰 Swing / `Project` 的纯函数，是因为这些分支全是「可空字段在不在」的判断，
-         * 判反了不会编译报错、只会在界面上把存在的文件说成找不到（真发生过）。抽出来才能离线断言。
+         * 判反了不会编译报错、只会在界面上把存在的文件说成找不到（真发生过）。
+         * 四条文案本身搬到了 [LocalRunGates]（自测页要用去掉样例那一关的同一条链），
+         * 这里的**顺序与产出与原来逐字一致**。
          */
         @JvmStatic
-        fun blockingReason(pid: String, t: CompareTarget, fallbackBase: String?): Block? {
-            val found = t.samples
-            if (found == null) {
-                return Block(
-                    "当前项目没有落盘目录",
-                    "新建但还没保存到磁盘的项目没有样例，也没有源文件。\n" +
-                        "先把项目存到磁盘上，再回来点「重新查找样例」。",
-                )
-            }
-            if (!found.dirExists) {
-                return Block(
-                    "没有样例目录",
-                    "还没拉过 $pid 的样例。\n\n插件认的目录是：\n    ${found.dirPath}\n\n" +
-                        "里面需要形如 ${pid}_1.in / ${pid}_1.out 的成对文件（拉题时会自动生成）。\n" +
-                        "点下方「去拉取」到「拉取」页生成，回来再点「重新查找样例」。",
-                )
-            }
-            if (found.samples.isEmpty()) {
-                return Block(
-                    "样例目录里没有成对的 .in/.out",
-                    "目录存在但跑不了：\n    ${found.dirPath}\n\n" +
-                        "需要同名成对的 ${pid}_N.in 与 ${pid}_N.out 才算一组（N 是编号）。" +
-                        if (found.orphanInputIndexes.isNotEmpty()) {
-                            "\n只有 .in 的编号：${found.orphanInputIndexes.joinToString()}"
-                        } else {
-                            ""
-                        },
-                )
-            }
-            if (t.sourcePath == null) {
-                val looked = File(t.projectBasePath ?: fallbackBase ?: "", "$pid.cpp").path
-                return Block(
-                    "项目根没有 $pid.cpp",
-                    "没东西可编。\n\n我找的是项目根下的：\n    $looked\n\n" +
-                        "改过名或放进子目录的，插件不会去猜——编译哪个文件必须明确（猜错就是在编别的代码）。\n" +
-                        "把它放回项目根并命名为 $pid.cpp，或者在题号框里填那个文件名对应的题号。",
-                )
-            }
-            if (t.compiler == null) {
-                return Block(
-                    "没找到编译器",
-                    "这台机器上没找到 C++ 编译器。\n\n插件按这些顺序找：\n" +
-                        "1. 设置里填的绝对路径\n2. PATH 上的 clang++ / g++ / c++\n" +
-                        "3. IDE 自带的 MinGW（Windows：bin/mingw/bin/g++.exe）\n\n" +
-                        "在 `Settings | Tools | 洛谷拉题` 里填一个编译器绝对路径，或点「换编译器…」选一次。",
-                )
-            }
-            return null
-        }
+        fun blockingReason(pid: String, t: CompareTarget, fallbackBase: String?): Block? =
+            LocalRunGates.noProject(t)
+                ?: LocalRunGates.samplesOf(pid, t)
+                ?: LocalRunGates.noSource(pid, t, fallbackBase)
+                ?: LocalRunGates.noCompiler(t)
     }
 
     /** 一条「还不能开始」的说明：短句进状态栏，长文进详情区。 */

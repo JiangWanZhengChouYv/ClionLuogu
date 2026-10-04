@@ -1,14 +1,11 @@
 package com.user.clionluogu.service
 
-import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.execution.process.OSProcessHandler
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.user.clionluogu.service.SampleSetService.Sample
 import java.io.File
-import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -16,13 +13,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 本地样例对拍：把 `Pxxx_N.in` 喂给编译产物，与 `Pxxx_N.out` 逐行比对。
  *
  * **本文件禁止引入 CMake / CLion 专有 API**（它们以 bundled module 形式存在，
- * 一旦 `<depends>` 就把插件绑死在 CLion 上）。这里只用 platform 核心的
- * `GeneralCommandLine` + `OSProcessHandler`；要跑的产物由 [CompilerService] 现场编译出来。
+ * 一旦 `<depends>` 就把插件绑死在 CLion 上）。起进程那部分在 [ProcessRunner]（对拍与自测共用），
+ * 这里只做「跑 + 比对」：产物由 [CompilerService] 现场编译出来，差异由 [SampleDiff] 算。
  *
  * 两个刻意的设计：
- * - stdin 用 [GeneralCommandLine.withInput] 直接把 `.in` 文件重定向进去，
- *   不走管道 —— 省掉「写完要关」和「大输入把 64KB 管道塞死、父子互等」两类坑；
- * - 输出用 [BoundedCapture] 自己收，**不用 `CapturingProcessHandler`**：它是无界缓冲，
+ * - stdin 走 [ProcessRunner] 的文件重定向，**不用管道** —— 省掉「写完要关」和
+ *   「大输入把 64KB 管道塞死、父子互等」两类坑；
+ * - 输出由 [ProcessRunner] 用 [BoundedCapture] 收，**不用 `CapturingProcessHandler`**：那是无界缓冲，
  *   一个死循环打印的本地程序能把 IDE 内存吃爆。超限即刻 `destroyProcess()`。
  */
 object SampleCompareService {
@@ -31,7 +28,7 @@ object SampleCompareService {
     const val DEFAULT_TIMEOUT_MS = 5_000
 
     /** 单组判定结果。 */
-    enum class Verdict { PASS, MISMATCH, RUNTIME_ERROR, TIMEOUT, OUTPUT_TOO_MUCH, NOT_RUN, ERROR }
+    enum class Verdict { PASS, MISMATCH, RUNTIME_ERROR, TIMEOUT, MEMORY_LIMIT, OUTPUT_TOO_MUCH, NOT_RUN, ERROR }
 
     /** 一次对拍的输入。 */
     data class Request(
@@ -44,6 +41,10 @@ object SampleCompareService {
         val pathEntries: List<File> = emptyList(),
         /** 非空表示**先编译**（对拍页的正常路径），产物写到 [exe]。 */
         val compile: Compile? = null,
+        /** 内存上限（MB）；null = 不比内存。超了判 [Verdict.MEMORY_LIMIT]。 */
+        val memoryLimitMb: Int? = null,
+        /** 峰值内存测量器；null = 这台机器量不到，[memoryLimitMb] 也就不生效（界面要明说）。 */
+        val meter: ResourceMeter.Meter? = null,
     )
 
     /** 跑之前先编译：`<compiler> <args> -o <Request.exe> <source>`。 */
@@ -52,6 +53,7 @@ object SampleCompareService {
     /**
      * 单组结果。[expectedPreview] / [actualPreview] 只在失败时非空（首个差异 + 局部上下文）；
      * [actualOutput] 是完整 stdout，同样只在失败时留 —— 「存反例」要用它，通过的组不留，免得几 MB 白占内存。
+     * [peakMemoryMb] 只有这台机器量得到峰值内存才非空。
      */
     data class Result(
         val sample: Sample,
@@ -64,6 +66,7 @@ object SampleCompareService {
         val actualPreview: String? = null,
         val note: String? = null,
         val actualOutput: String? = null,
+        val peakMemoryMb: Int? = null,
     )
 
     /** 一轮对拍的汇总。[compile] 非空表示这一轮是先编译再跑的（失败时 [results] 为空）。 */
@@ -163,63 +166,31 @@ object SampleCompareService {
         }
     }
 
-    /** 跑单组样例。只在后台线程调用。 */
+    /** 跑单组样例：进程部分交给 [ProcessRunner]，这里只做「比对 + 生成差异上下文」。 */
     fun runOne(
         request: Request,
         sample: Sample,
         indicator: ProgressIndicator,
         stopRequested: AtomicBoolean,
     ): Result {
-        val startedAt = System.currentTimeMillis()
-        val commandLine = GeneralCommandLine(request.exe.absolutePath).apply {
-            withWorkDirectory(request.workDir.absolutePath)
-            withCharset(StandardCharsets.UTF_8)
-            // CONSOLE = 系统环境 + IDE 控制台目录；NONE 会连 PATH/SystemRoot 都丢掉，Windows 上必然起不来
-            withParentEnvironmentType(GeneralCommandLine.ParentEnvironmentType.CONSOLE)
-            withInput(sample.inFile)
-            withRedirectErrorStream(false)
-            val injectDirs = (listOfNotNull(request.exe.parentFile) + request.pathEntries)
-                .filter { it.isDirectory }
-                .distinct()
-            if (injectDirs.isNotEmpty()) {
-                val path = (injectDirs.map { it.absolutePath } + System.getenv("PATH").orEmpty())
-                    .filter { it.isNotBlank() }
-                    .joinToString(File.pathSeparator)
-                withEnvironment("PATH", path)
-            }
-        }
-
-        val handler = try {
-            OSProcessHandler(commandLine)
-        } catch (e: Exception) {
-            return Result(sample, Verdict.ERROR, System.currentTimeMillis() - startedAt, note = "进程未能启动：${e.message}")
-        }
-        val capture = BoundedCapture(SampleDiff.MAX_READ_BYTES)
-        capture.attach(handler)
-        handler.addProcessListener(capture)
-        handler.startNotify()
-
-        var timedOut = false
-        val deadline = startedAt + request.timeoutMs
-        while (!handler.isProcessTerminated) {
-            if (stopRequested.get() || indicator.isCanceled) {
-                handler.destroyProcess()
-                return Result(sample, Verdict.NOT_RUN, System.currentTimeMillis() - startedAt, note = "已取消")
-            }
-            if (System.currentTimeMillis() >= deadline) {
-                timedOut = true
-                handler.destroyProcess()
-                break
-            }
-            handler.waitFor(100L)
-        }
-        // 给终止一点收尾时间，避免留下孤儿进程
-        capture.awaitTerminated(2_000L)
-
-        val elapsed = System.currentTimeMillis() - startedAt
-        val exitCode = handler.exitCode ?: capture.exitCode
-        val stdout = capture.stdoutText()
-        val stderr = SampleDiff.clipBytes(capture.stderrText()).ifBlank { null }
+        val outcome = ProcessRunner.run(
+            ProcessRunner.Run(
+                exe = request.exe,
+                stdinFile = sample.inFile,
+                workDir = request.workDir,
+                timeoutMs = request.timeoutMs,
+                pathEntries = request.pathEntries,
+                meter = request.meter,
+            ),
+            indicator,
+            stopRequested,
+        )
+        val elapsed = outcome.elapsedMs
+        val stdout = outcome.stdout
+        // 有测量器时报表和程序的 stderr 是同一条流，展示必须用剥过报表的那份，
+        // 否则「stderr」那一节里会夹着 peak memory footprint 这种插件内部的东西
+        val stderr = SampleDiff.clipBytes(outcome.programStderr ?: outcome.stderr).ifBlank { null }
+        val peakMb = ResourceMeter.mb(outcome.peakMemoryBytes)
 
         fun result(
             verdict: Verdict,
@@ -231,29 +202,48 @@ object SampleCompareService {
             sample = sample,
             verdict = verdict,
             elapsedMs = elapsed,
-            exitCode = exitCode,
+            exitCode = outcome.exitCode,
             stderr = stderr,
             issue = issue,
             expectedPreview = expectedPreview,
             actualPreview = actualPreview,
             note = note,
             actualOutput = if (verdict == Verdict.PASS) null else stdout.takeIf { it.isNotEmpty() },
+            peakMemoryMb = peakMb,
         )
 
-        if (capture.overLimit) {
+        outcome.startError?.let {
+            return result(Verdict.ERROR, note = "进程未能启动：$it")
+        }
+        if (outcome.cancelled) {
+            return result(Verdict.NOT_RUN, note = "已取消")
+        }
+        // 超限优先于超时：BoundedCapture 一超限就 destroyProcess，那种情况下 timedOut 也可能是真，
+        // 但「输出爆量」才是用户要看的原因（判成 OLE 而不是 TLE）。
+        if (outcome.overLimit) {
             return result(
                 Verdict.OUTPUT_TOO_MUCH,
                 note = "输出超过 ${SampleDiff.MAX_READ_BYTES} 字节即被终止（本地近似 OLE）",
             )
         }
-        if (timedOut) {
+        if (outcome.timedOut) {
             return result(Verdict.TIMEOUT, note = "超过 ${request.timeoutMs} ms 未结束，已终止 (TLE?)")
         }
+        // 内存排在退出码之前：超内存的程序常常是被系统/OOM 杀掉的，那时退出码也难看，
+        // 但「超内存」才是原因（量不到峰值时这一条整个跳过，绝不拿 0 当「没超」）
+        val limitBytes = ResourceMeter.bytesOfMb(request.memoryLimitMb)
+        if (limitBytes != null && outcome.peakMemoryBytes != null && outcome.peakMemoryBytes > limitBytes) {
+            return result(
+                Verdict.MEMORY_LIMIT,
+                note = "峰值内存 ${peakMb ?: "?"} MB 超过上限 ${request.memoryLimitMb} MB（本地近似 MLE）",
+            )
+        }
+        val exitCode = outcome.exitCode
         if (exitCode == null) {
             return result(Verdict.ERROR, note = "进程未正常退出（可能已被终止）")
         }
         if (exitCode != 0) {
-            return result(Verdict.RUNTIME_ERROR, note = exitCodeHint(exitCode))
+            return result(Verdict.RUNTIME_ERROR, note = ProcessRunner.exitCodeHint(exitCode))
         }
 
         val expectedText = SampleDiff.readCapped(sample.expectedFile)
@@ -272,14 +262,5 @@ object SampleCompareService {
                 "实际 stdout", actualLines, issue.line, "共 ${actualLines.size} 行",
             ),
         )
-    }
-
-    /** Windows 上两类常见非零退出码的成因不同，文案必须分开，否则用户以为是自己代码错了。 */
-    private fun exitCodeHint(exitCode: Int): String = when (exitCode) {
-        -1073741515 -> "退出码 $exitCode (0xC00007B)：缺少运行时 DLL（MinGW 的 libstdc++/libwinpthread 不在 PATH 上）"
-        -1073741819 -> "退出码 $exitCode (0xC0000005)：访问违例（段错误一类）"
-        139 -> "退出码 139：SIGSEGV"
-        134 -> "退出码 134：SIGABRT（断言失败 / 堆破坏）"
-        else -> "退出码 $exitCode"
     }
 }

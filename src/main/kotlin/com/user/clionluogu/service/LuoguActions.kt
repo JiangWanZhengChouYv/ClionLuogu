@@ -1,6 +1,7 @@
 package com.user.clionluogu.service
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
@@ -344,6 +345,10 @@ object LuoguActions {
             }
             val found = SampleSetService.discover(base, pid)
             val source = runCatching { File(base, "$pid.cpp").takeIf { it.isFile } }.getOrNull()
+            // 「默认时空在题里」：那两行是拉题时写进 Pxxx.md 的，这里读文件开头一小段就够。
+            // 峰值内存的测量器是**实测**出来的（跑一遍 trivial 命令看能不能解析），量不到就是 null。
+            val limits = ProblemLimits.fromMd(File(base, "$pid.md"))
+            val meter = ResourceMeter.available()
             invokeLater {
                 onResult(
                     CompareTarget(
@@ -352,6 +357,8 @@ object LuoguActions {
                         sourcePath = source?.path,
                         compiler = detected.compiler,
                         compilerNotice = detected.overrideIgnored,
+                        problemLimits = limits,
+                        meter = meter,
                     ),
                 )
             }
@@ -380,6 +387,29 @@ object LuoguActions {
         return runCatching { File(base, "$pid.cpp").isFile }.getOrDefault(false)
     }
 
+    /**
+     * 编译前把编辑器里那份 [file] 落盘（**只保存这一个文件**，不动别的未保存标签）。
+     *
+     * 返回被保存的文件名（给状态行用「已保存 P1001.cpp，」这种前缀），没有改动时 null。
+     * 须在 EDT 调用；整段包在 `runWriteAction` 里（`saveDocument` 是写动作）。
+     *
+     * 对拍与自测共用：两边都是「编译读磁盘、编辑器可能更新」，各写一份就会出现
+     * 一边保存一边不保存这种事。
+     */
+    fun saveIfModified(file: File): String? {
+        val manager = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance()
+        var saved: String? = null
+        ApplicationManager.getApplication().runWriteAction {
+            val vf = runCatching { LocalFileSystem.getInstance().findFileByIoFile(file) }.getOrNull()
+                ?: return@runWriteAction
+            if (!manager.isFileModified(vf)) return@runWriteAction
+            val document = manager.getDocument(vf) ?: return@runWriteAction
+            manager.saveDocument(document)
+            saved = vf.name
+        }
+        return saved
+    }
+
     /** 把回调切回 EDT 执行。 */
     private fun invokeLater(action: () -> Unit) {
         ApplicationManager.getApplication().invokeLater(action)
@@ -400,4 +430,11 @@ data class CompareTarget(
     val compiler: CompilerService.Compiler?,
     /** 设置里的编译器不可用、已回落时的那句提示。 */
     val compilerNotice: String?,
+    /**
+     * 题面里的时空限制（`Pxxx.md` 那两行）。取不到就是两个 null —— 界面退回插件默认，
+     * 而不是猜一个「一般题都是 1s/128MB」。
+     */
+    val problemLimits: ProblemLimits.Limits = ProblemLimits.Limits(null, null),
+    /** 峰值内存测量器；null = 这台机器量不到，界面要明说「不判 MLE」。 */
+    val meter: ResourceMeter.Meter? = null,
 )

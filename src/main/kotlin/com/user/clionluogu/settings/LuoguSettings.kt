@@ -112,6 +112,14 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
             compilerArgs = value
         }
 
+    /**
+     * [compareCompilerArgs] 拆成的参数列表。
+     *
+     * 对拍与自测共用这一条拆分规则（空格分隔、丢空串）——两处各写一遍 `split(' ')`
+     * 的话，改天一边支持引号、另一边不支持，就会出现「同一个设置，两边编出来的东西不一样」。
+     */
+    fun compareCompilerArgList(): List<String> = compareCompilerArgs.split(' ').filter { it.isNotBlank() }
+
     override fun getState(): LuoguSettings = this
 
     override fun loadState(state: LuoguSettings) {

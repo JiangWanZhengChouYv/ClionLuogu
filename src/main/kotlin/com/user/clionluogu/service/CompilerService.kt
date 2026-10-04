@@ -183,6 +183,15 @@ object CompilerService {
     /** 产物运行时需要额外挂到 `PATH` 的目录：编译器所在目录（Windows 的 MinGW DLL 就在旁边）。 */
     fun runtimePathEntries(compilerExe: File): List<File> = listOfNotNull(compilerExe.parentFile)
 
+    /**
+     * 产物文件名：Windows 必须带 `.exe`，其余原样。
+     *
+     * **对拍与自测共用这一条规则**（两边各写一份的话，产物名会算出两个不同的文件，
+     * 「刚编的那份」和「正要跑的那份」就对不上了）。
+     */
+    @JvmStatic
+    fun executableName(pid: String): String = if (isWindows()) "$pid.exe" else pid
+
     private fun command(
         exe: File,
         args: List<String>,

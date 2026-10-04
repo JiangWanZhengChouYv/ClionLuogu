@@ -977,6 +977,205 @@ tooltip 上走兜底会写明「诊断里写的是 xxx，按你提交的那份�
 速度搜索的输入手感；详情区现在能用鼠标选文字（这条改了 `isFocusable`，焦点/滚动行为可能跟着变）；
 以及「土不土」本身——这是他的判断，不是断言能覆盖的。
 
+## 36. 1.7.4：提交页一直说「未打开编辑器」
 
+1.7.3 刚发出去他就报了：提交页一直显示没打开编辑器，交不了。
+（他对比的是更早那版**弹窗**提交——那个是按文件名去取代码的，所以一直好使。）
 
+### 根因：它只看「当前选中的那一个」编辑器
+
+`SubmitPanel.readCurrentCode()` 读的是 `FileEditorManager.selectedTextEditor`，于是两种常见情形都会拿到 null：
+
+1. 多标签里 `P1001.cpp` **开着**，但当前选中的是 `main.cpp`（或刚点过别的页签）；
+2. 文件就在项目根，只是**没在编辑器里打开**——这恰好是他现在的状态：测 1.7.2 的删除功能时把
+   `P1001.*` 删了又新拉了一道题，编辑器里开着的是别的文件。
+
+对拍页一直是按题号去项目根找源文件的（`probeCompareTarget` 里 `File(base, "$pid.cpp")`），
+提交页没道理更挑——**同一个插件里两个页面取「这道题的代码」用了两套规则**，这才是病根。
+
+### 改法
+
+`readCode(pid)` 两级来源，判定抽成纯函数 `pickCodeOrigin(openFileNames, wantedName, diskFileExists)`：
+
+- **按题号在所有已打开的文件里找**（`manager.openFiles` + `getEditors(vf)`），不看当前选中项；
+  文件名比较忽略大小写（大小写不敏感的卷上会差一次）；
+- 没有 → 退到项目根 `Pxxx.cpp`，直接 `java.io` 读（走到这一路说明它没在编辑器里打开，磁盘就是唯一真相；
+  比绕 VFS + `FileDocumentManager.getDocument` 少一层，也顺带避开 EDT 上那个 `ThreadingAssertions` 坑）；
+- 两处都没有 → 说「找不到 `Pxxx.cpp`：编辑器里没打开，项目根也没有这个文件」，
+  不再拿「未打开编辑器」这种半截真相糊弄。
+
+预览旁边把**来源写出来**（「编辑器里打开的 P1001.cpp（含未保存的修改）」/「项目根的 P1001.cpp（编辑器里没打开它）」）+ 行数——
+「交的是哪一份」这种事不该让人猜。顺带让题号跟着当前编辑器走（手输的不会被覆盖，
+和对拍页同一条规则），以前那个默认值是 `init` 时算一次就定死了。
+
+### 追加：预览不会刷新（同一天第二条回报）
+
+第一条修完，他接着说「**这个不会刷新，我把窗口关了也不刷新，改成 1s 刷一次**」。
+根因是我原本只在 `addNotify()` 里刷一次，而**工具窗口的 Content 是缓存的**：切页签、
+甚至把侧边栏整个关掉再打开，`removeNotify`/`addNotify` 都不一定再触发——面板活着，
+`init` 那次读到的文本就一直挂在 `JBTextArea` 里。这类「靠生命周期回调刷一次」的假设，
+在 Content 缓存面前不成立，只能自己定个表。
+
+改成 `javax.swing.Timer(1000)`（Swing 定时器天然在 EDT 回调，不用再 `invokeLater`）+ 三条约束：
+
+- **每 tick 只做「便宜探测」**：编辑器那一路看 `document.modificationStamp` + `textLength`，
+  磁盘那一路只 `stat`（`length()` + `lastModified()`），拼成签名；**签名没变就直接 return**，
+  既不重读全文也不重画。每秒复制一份源码字符串给 EDT 添堵是没必要的。
+- **重画要保住滚动位置**：`showPreview` 先记下 `viewport.viewPosition`，换完文本再夹回
+  `[0, 内容尺寸 - 视口尺寸]` 复位。不夹的话，改短代码会 `InvalidComponentException` 式跳顶，
+  每秒跳一次比不刷还烦。
+- **面板不在容器里就停表**：`removeNotify()` 里 `ticker.stop()`，别在背后空转；
+  `refreshPreview` 开头还挡一层 `project.isDisposed`（定时器与 project 生命周期不必同步）。
+
+`提交` 按钮走 `refreshPreview(force = true)` 再交 `currentCode`——**交的一定是刚刚那一份**，
+不是最多 1 秒前的缓存；状态行的「N 行」也因此和真实提交内容一致。
+`题号` 输入框加 `addActionListener`（回车即重看），不用等下一个 tick。
+
+探针补 6 条（`pickCodeOrigin`：题号文件在第二个标签里 / 只有 `main.cpp` 时退磁盘 / 大小写 /
+两处都没有 / 开着别的题 / 编辑器开着就不读磁盘）+ 3 条 `countLines`（空串 0 行、无结尾换行 2 行、
+有结尾换行 3 行），合计 **305 条全绿**（272 Java + 33 元数据），布局探针 460/240/170 三档被裁 0。
+
+**只能他点一次确认的**：定时器在有真实 `Project` 的 IDE 里才跑，签名短路是否真能保住滚动位置、
+1 秒的延迟手感如何，都量不了。
+
+**值得记的两条**：一是「按当前选中项取上下文」在 IDE 插件里特别常见、也特别容易错——
+用户的心智模型是「我在做 P1001 这道题」，不是「我此刻焦点在哪个标签」，
+以后碰到「取这道题的 X」一律按题号找、找不到再退磁盘，几个页面共用同一份判定。
+二是**工具窗口 Content 会缓存面板**，所以「界面数据的刷新」不能挂在 `addNotify` 上；
+要么挂真正的事件（`FileDocumentManager.addDocumentListener`、`VfsChangeListener`、
+`FileEditorManagerListener`），要么像这样自己定表 + 签名短路。
+
+## 37. 1.8.0：左侧题目栏 + 底部运行栏（他要「洛谷 IDE Plus」）
+
+1.7.4 还压着没发，他先挑了功能 2 并给了更大的框架：**「插件挪到左边，底下弹出个自测，还能用上 CLion 这么好用的 IDE，就是洛谷的 IDE Plus 版本」**。
+四个澄清问题他一个没回（AskUserQuestion 返回空），我按自己标的推荐项定了：底部装**自测 + 对拍 + 提交**、stdin **不落盘**、每次**都重编**、anchor **只改注册不加开关**。
+
+### 为什么这么分
+
+病根不是少一个功能，是**「写码 → 跑 → 看输出」这条最高频的回路被拆在两处**：跑要在右侧一堆页签里找「对拍」，
+而 IDE 自己的运行输出在底部。分家之后左侧 = 题目侧（评测 / 拉取 / 搜索 / 预览 / 题目 / 登录），
+底部 = 运行侧（自测 / 对拍 / 提交），和 CLion 的 Run 窗口同一个位置。
+
+自测补的是对拍页一句硬拒绝：`Pxxx_samples/` 里没有成对的 `.in`/`.out` 就「啥也干不了」。
+而调 WA 的第一步往往就是「我造个输入，看它到底打印什么」——这一刀下去，**「没样例」不再是死路**。
+
+### 三条不做什么（都是被之前的教训逼出来的）
+
+- **stdin 不落盘**：按题号存进项目级 XML（新 `storage/SelfTestInputService`）。造一个新目录名
+  就等于给 `ProblemIndexService` / `AcCleanupService` / `DeleteOrder` 那套「只认四个精确名字」的删除口径
+  添一处「删不到 or 删错」的风险；而这份输入本来就只是临时试。想留档他自己复制到 `Pxxx_cases/`。
+- **不给「用上次产物」**：那要靠 mtime 猜产物新旧，正是他之前否掉的那类猜测（找产物 / bits 兼容头同一条线）。
+  重编一两秒换「看到的输出一定来自现在这份代码」。
+- **不显示内存**：子进程内存没有可移植拿法（`getrusage(RUSAGE_CHILDREN)` 要 JNI、`/usr/bin/time` 不保证存在）。
+  界面连「内存」两个字都不出现——不说比瞎说好。
+
+### 两个必须抽出来的东西
+
+1. **`service/ProcessRunner.kt`**：`SampleCompareService.runOne` 原来把「起进程 + 超时 + 取消 + 有界捕获」
+   和「读期望 + 比对 + 差异上下文」揉在一起，而自测只要前者。**复制那 60 行就是两份会各自腐烂的代码**。
+   抽出 `Run`/`Outcome` 后 `runOne` 退化成「跑 + 比」，`Request`/`Result`/`Report`/`Verdict` 一字未动。
+   三条纪律原样搬：stdin 走**文件重定向**（不是管道）、`ParentEnvironmentType.CONSOLE` + 注入编译器目录到
+   `PATH`、自己用 `BoundedCapture` 收而**不用 `CapturingProcessHandler`**（无界缓冲，刷屏能撑爆 IDE）。
+   判定优先级也保住：**超限 > 超时 > 取消 > 退出码**（超限与超时都是被杀，但「输出爆量」才是他要看的原因）。
+2. **`service/SubmissionTracker.kt`**：提交记账原来绑在 `LuoguToolWindow.trackSubmission` 上，
+   把「写持久化 + 起轮询 + 刷评测页」三件事捆在一起。提交页搬到底部之后，这条捆绑变成**会丢数据的 bug**：
+   左侧窗口从没打开过 → `evalWindow()` 是 null → 记录整个不落盘，连重启后的补轮询都找不到它。
+   现在持久化与轮询**无条件做**，UI 能找到就更新；`updateSubmission` 退化成只管界面，
+   补拉老记录那条路（`refreshUnfinished`）也改走 `applyStatus`，落盘只有一处。
+
+另外 `ui/LocalRunGates.kt` 收走了「跑不起来」的四条文案：自测需要的是**去掉样例那一关**的同一条链
+（`blockingReason` 的顺序与产出与搬迁前逐字一致，探针在断言）。`LuoguActions.saveIfModified`、
+`CompilerService.executableName`、`LuoguSettings.compareCompilerArgList` 同样是从两份重复里收成一份。
+
+### 探针从 /tmp 搬进仓库（这轮最大的教训）
+
+2026-10-03 一次重启把 `/tmp` 清了，那 305 条断言的**源码整个没了**——它们本来就该是仓库的一部分。
+现在在 `probes/`：`run.sh`（自动找 Gradle 下的 JDK 与 CLion transforms 里的平台包）、
+`CoreProbe.java`（纯逻辑 80 条）、`ProcessProbe.java`（**真 clang++ 真子进程** 24 条）、
+`LayoutProbe.java`（布局）、`meta.py`（元数据）。跑法：`bash probes/run.sh [core|process|layout|meta]`。
+
+重建时踩到的坑，都写进 `run.sh` 注释了：
+
+- `-cp` 必须带上探针自己的输出目录（`build/probes`），否则「找不到或无法加载主类」；
+- classpath 一律**绝对路径**（相对路径在 `cd` 之后整个失效，症状是只有新增类报「找不到符号」）；
+- macOS 自带 bash 3.2 在 `set -u` 下展开**空数组**直接报错 → 开关用普通字符串；
+- 平台 Swing 要 `--add-opens java.desktop/javax.swing{,.plaf.basic}` + `java.awt`，
+  macOS 滚动条还要 `-Djna.boot.library.path=$PLAT/lib/jna/aarch64`；
+- JVM 不自己退出（平台共享的 `I/O pool` 是非 daemon 线程）→ 探针末尾 `Runtime.halt()`，
+  runner 那边取 pid 再 kill，且**别 `| grep`**（缓冲，看不到进度）；
+- 4 条一开始红的断言都是**我的期望写错**，不是代码错：`splitHeader` 剥的是「第一个**非空**行」
+  （开头空行不算内容）；`sectionsFromText(null)` 给空列表才是对的；`contextBlock` 的行格式是
+  `✗    5: line5`（`padStart(4)` + 冒号），我按记忆写成 `5 | line5`。
+
+`ProcessProbe` 里那条「kill 到收尾要几秒」的量测（超时 600ms 实际花 5.0s）说明：
+`destroyProcess()` 是 SIGTERM 补刀 + `awaitTerminated(2000)`，所以**被判超时的程序会让「运行」按钮多灰几秒**。
+不是 bug，但值得知道；断言阈值因此放到 15 秒（它要抓的是「等满编译上限 120 秒」那种回归）。
+
+### 覆盖面
+
+本轮重建后的数字：**108 条 Java 断言（core 84 + 真子进程 24）+ 36 条元数据 + 布局 4 档 72 个位置 / 被裁 0**，
+比丢掉的那 305 条**覆盖窄**——`ScoreTotals` / `ProblemIndexService` / `DeleteOrder` / `AcCleanupService`
+那几个旧套路的断言还没搬回来，它们的保护现在只剩代码里的注释。这是这轮已知欠账。
+
+底部窗口形状（宽而矮）的量法是新的：`LayoutProbe` 在 **1200×180 / 900×120 / 500×260 / 460×400**
+四档开真 `JFrame` + `pack` 量详情区，因为 `AutoFlipSplitter` 按**宽度**换向，在宽而矮的底部窗口里
+根本不救场——自测面板的输入 / 输出因此直接用 `JSplitPane(VERTICAL_SPLIT)`，没套那个自动换向的分栏。
+
+### 只能在真实 CLion 里点的
+
+左侧栏第一次要不要手动拖（`anchor` 只是默认值，IDE 记住用户拖过的布局）；底部窗口默认高度够不够看输出；
+「运行」时 `cin >>` 读满就停、死循环 5 秒被终止、刷屏被截断；换题号后输入各自回来、重启还在；
+编译失败的诊断 + 跳到第 N 行落的是项目根那份；两个窗口的页签互相跳转（对拍页的「去拉取」、
+通知的「查看」跳评测）都还对不对；从底部提交时**从没打开过左侧窗口**，记录有没有正常出现在评测页。
+以后碰到「取这道题的 X」，一律按题号找，找不到再退磁盘，两个页面共用同一份判定。
+
+## 38. 1.8.0 追加：他试完之后的三条
+
+他装好试过，回三条。
+
+**1）「底下太臃肿了，改成左边输入，右边输出」。** 我 1.8.0 第一版是上下排（当时的判断是「底部窗口宽而矮，
+所以纵向分栏」）。方向错在**矮不是问题，横向浪费才是**：底部窗口能一千多像素宽，左右排每一块都够宽。
+改用现成的 `AutoFlipSplitter`（按宽度换向：宽 → 左右，窄 → 上下）。顺带减 chrome——两块 `TitledBorder`
+换成一行细说明（边框 + 标题吃掉两行高），次级动作（停止 / 跳到第 N 行 / 去拉取 / 换编译器）从 `JButton`
+换成 `LinkLabel`。这正是 1.7.2 那条坑的解药：**链接 `setVisible(false)` 不留空槽**，
+不像隐藏的按钮会在 `WrapLayout` 里留一段空白。
+
+**2）「对拍能自己设定空间时间，测试复杂度，默认时空在题里」。** 时间上限本来就有（写死 5 秒）；
+内存这块 1.8.0 第一版是**明确不做**的（「子进程内存没有可移植的拿法」）。他要，就重做一遍判定标准：
+**不按 `os.name` 猜，而是实测** —— 真拿 `/usr/bin/time -l` 与 `-v` 跑一条 trivial 命令，
+**能解析出峰值才算可用**（本机 macOS 报 `peak memory footprint` = 字节，实测通过）。
+量不到就**禁用字段 + tooltip 写明原因**，绝不拿 0 当「没超」。
+默认值取题面：`Pxxx.md` 里那两行（`**时间限制**: 1000 ms` / `**内存限制**: 131072 KB`，KB → MB 由 `ProblemLimits` 解析）。
+新增判定 `Verdict.MEMORY_LIMIT`，颜色直接借评测页的 MLE（状态码 4），不新调色板。
+两条必须处理的细节：**包一层 `time` 之后被杀的是测量器**，所以必须
+`setShouldDestroyProcessRecursively(true)`，否则超时 / 取消会留下跑飞的孤儿进程；
+**报表与程序的 stderr 是同一条流**，展示前得剥掉报表行（`ResourceMeter.stripReport`）。
+
+**3）「我拉取题目以后还显示项目根没有 P1001.cpp」。** 真 bug，而且是设计缺陷：`probeIfStale()` 的门槛是
+`targetPid == pid && target != null` → 只要探过一次（那时文件还不存在）就**永不重探**，
+而「拉题完成」与运行侧之间没有任何事件。修法是**盯磁盘**：新增 `LocalRunSignature`，
+每秒给出「源文件长度 + 样例目录条目数与 mtime」的签名，变了就重探（只 `stat`，不读文件内容）。
+两个面板共用同一条签名，`running` / `probing` 时不打扰。
+
+### 探针跟着长的两条防呆
+
+`probes/run.sh` 现在**先跑 `compileKotlin`** 再断言：改完 `ResourceMeter` 忘了编译，探针照样红 ——
+「跑的是旧字节码」这种坑必须自动化挡掉，不能靠我记得。
+
+本轮 124（core）+ 33（真子进程）+ 36（元数据）全绿。其中：
+
+- 两条一开始红的是**我的期望值写错**（1025 KB 是跨进第 2 兆，不是 1 兆；非 `PASS` 的行本来就该留完整 stdout）；
+- 一条红的是**真 bug**：`isReportLine` 用 `matches()` 去匹配 `        real         0.00s` 会漏
+  —— 数字后面还跟着单位 `s`，于是那三行计时会混进用户看到的 stderr。改成 `containsMatchIn` 修掉，断言留着。
+- 真子进程那 33 条里，测量器那条是端到端的：编一个 `malloc(40MB)+memset` 的程序，
+  断言「峰值量得到 > 30 MB」「上限 8 MB 判 MLE」「上限 512 MB 判正常」「stdout 仍是 `ok\n`（报表没混进去）」
+  「对拍链路上 `Verdict.MEMORY_LIMIT` 与 `peakMemoryMb` 都对」。
+
+### 现在只能在真实 CLion 里点的（追加）
+
+- 拉完题**什么都不点**，一秒内运行侧就该把「项目根没有 Pxxx.cpp」变成能跑；
+- 内存字段：题面有 128 MB 就自动填上，量不到内存的机器上应该是**灰的 + 说明**；
+- 超内存那一行显示成「超内存 200 MB / 上限 8 MB」，方块颜色与评测页 MLE 一致；
+- 跑飞（死循环）被判超时之后，活动监视器里**不该留下同名孤儿进程**（递归杀那条只在 IDE 里能验）；
+- 底部窗口左右排下输入区够不够宽（一行 20 个数看不看得全）。
 
