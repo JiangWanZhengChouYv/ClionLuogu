@@ -218,10 +218,7 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         if (!running) {
             val pid = pidField.text.trim()
             if (LuoguPidValidator.isValidPid(pid)) {
-                val signature = LocalRunSignature.of(
-                    LocalRunSignature.sourceFile(project.basePath, pid),
-                    LocalRunSignature.samplesDir(project.basePath, pid),
-                )
+                val signature = LocalRunSignature.ofProject(project.basePath, pid)
                 if (signature != diskSignature || target == null) probe()
             }
         }
@@ -274,23 +271,14 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
             if (project.isDisposed) return@probeCompareTarget
             target = t
             targetPid = pid
-            diskSignature = LocalRunSignature.of(
-                LocalRunSignature.sourceFile(t.projectBasePath ?: project.basePath, pid),
-                LocalRunSignature.samplesDir(t.projectBasePath ?: project.basePath, pid),
-            )
+            diskSignature = LocalRunSignature.ofProject(t.projectBasePath ?: project.basePath, pid)
             applyTarget(t)
         }
     }
 
     private fun applyTarget(t: CompareTarget) {
-        val compiler = t.compiler
-        if (compiler == null) {
-            compilerLabel.text = "编译器：未找到"
-            compilerLabel.toolTipText = null
-        } else {
-            compilerLabel.text = "编译器：${compiler.display()}"
-            compilerLabel.toolTipText = "${compiler.file.absolutePath}\n${compiler.versionLine.orEmpty()}"
-        }
+        compilerLabel.text = CompilerLine.text(t.compiler, t.origin, t.gccAdvice)
+        compilerLabel.toolTipText = CompilerLine.tooltip(t.compiler, t.origin, t.gccAdvice)
         if (LimitFields.shouldFillFromProblem(limitsTouched)) fillLimitsFromProblem(t)
         syncLimitHints()
         val block = blockingReason(pidField.text.trim(), t, project.basePath)

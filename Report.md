@@ -1363,3 +1363,207 @@ JetBrains 的布局规则是**上下条横跨整宽、侧边条被夹在中间**
 来源我说不清。我没有回退它，而是接着收尾：补 `scroll()`、把 `head`/`actions` 挂回去、
 补 `commitLimits()` 与右栏的 stderr。收尾后 `run.sh` 的 javac 防呆立刻抓到两份探针还在用被换掉的
 `sections(...)`（现在是 `outputSections` / `sideSections`），改完 **151 + 34 + 58 全绿**。
+
+## 43. 1.8.2：预览页对洛谷的适配（JCEF 判定、题面走 Markdown、元信息不粘连）
+
+他贴了一份 B2002 的题面文本：元信息糊成一句「难度普及-时间限制1000 ms内存限制131072 KB分数…」、
+`[受信任的用户](https://help.luogu.com.cn/…)` 按字面显示、正文没有列表排版，然后说
+「**优化一下适配，改成 JCEF + 对洛谷的适配**」。
+
+### 三条根因，一条是我自己差点造出来的
+
+1. **JCEF 被误判成「这台机器没有」**。面板原来是这么写的（1.4~1.8.1 都是）：
+   ```kotlin
+   private val browser: JBCefBrowser? = initBrowser()   // 字段初始化，问一次定死
+   private fun initBrowser() = if (PluginManagerCore.isPluginInstalled(...) && JBCefApp.isSupported()) JBCefBrowser() else null
+   ```
+   取证（都在他机器上读到的，不是印象）：
+   - `~/Library/Logs/JetBrains/CLion2026.2/idea.log` 里 `#c.i.u.j.JBCefApp` 打出过
+     `jcef version: remote_144.0.15.3416…`，`--framework-dir-path=…/plugins/jcef-plugin/jcef/Frameworks/…` —— **他的 CLion 有 JCEF，而且起得来**；
+   - 那句日志的时间是**启动后 3.8~9.7 秒**（10-03 是 +3816ms，10-04 是 +5240ms/+9698ms）。
+   - `plugins/jcef-plugin/lib/jcef-plugin.jar/META-INF/plugin.xml`：`<id>com.intellij.modules.jcef</id>`，
+     而真正把 JCEF 拉起来的 `applicationService class="…JBCefStartup" preload="notHeadless"` 挂在
+     `intellij.platform.ui.jcef` 这个**延迟加载模块**上（`lib/modules/intellij.platform.ui.jcef.jar`，V2 模块化布局）。
+     于是「工具窗口在启动早期建面板 → 那句 `isSupported()` 问得太早 → false 被字段永久缓存」。
+   - 顺带一句 `isPluginInstalled("com.intellij.modules.jcef")`：那个 id 确实作为 bundled plugin 存在，
+     但它是不是被这个 API 认成「已安装」我没有证据，而且**逻辑上多余**——`<depends>` 已经硬依赖它，
+     真缺的话插件根本加载不上，走不到这一行。删掉。
+
+   **我自己差点写进 Report 的错误结论**：先按「JBR 里搜 jcef」判断，`find CLion.app -iname "*jcef*"` 从
+   `/Applications/CLion.app` 根目录跑**返回空**，我据此准备写「你这台 CLion 的运行时不带 JCEF」。
+   两条推翻它：日志（上面那行 framework-dir-path）与直接 `ls Contents/plugins | grep jcef`。
+   原因是那个从根目录跑的 find 本身不可信（同一条件从 `Contents/plugins` 起跑就命中）。
+   **教训：一条 `find` 的空结果不能当证据，尤其是 2026.x 把原生件从 JBR 挪进了 `plugins/`。**
+
+2. **题面正文从来没进 Markdown 解析器**。`body.section("description")` 拿到的是洛谷那套方言的原文，
+   直接拼进 HTML —— marked 只挂在题解那条路上。所以 `[文字](链接)`、`- 列表` 原样显示。
+3. **元信息靠 CSS 分开**。`<span class="chip">` + `display:inline-block; margin-right:6px` 是 JCEF 里才成立的排版；
+   兜底的 `JEditorPane` 只认 CSS 2.1（丢 display、丢 margin），而**复制走的更是纯文本**，
+   `<b>难度</b>普及-` 就粘成了他那句「难度普及-时间限制…」。
+
+### 改法
+
+- `browser()` 懒建：`browserCache` 为空才问 `JBCefApp.isSupported()`，问到能用为止；`dispose()` 判空释放。
+- 题面每段（背景 / 描述 / 输入格式 / 输出格式 / 提示）交 marked：`bodyBlocksHtml(blocks, usesJcef, literal)` 生成
+  `<div class='md' data-luogu-md='luogu-md-N'>原文</div>` + 同名 `<script type='application/json'>` 载荷。
+  **宿主 div 里先摆着原文**，marked 万一没跑，读到的是原文而不是空白；
+  `rendererScripts()` 只在 JCEF 路径注入 marked + 渲染脚本（兜底绝不能带脚本，`JEditorPane` 会把 JSON 当正文打印）。
+- 元信息：`metaChipsHtml(cells)` → `<p class='chip'><b>难度</b>：普及-</p>`。
+  一行一枚靠**块级标签**（JCEF 里 CSS 收成 inline-block，兜底里就是天然的一行一枚），
+  键值分隔符**写在标记里**而不是靠 CSS —— 这样复制出来的纯文本也是「难度：普及-」。
+- 链接一律摘 `href`、去处留在 `title`（`neutralizeLinks`）：这块正文嵌在 IDE 面板里，
+  一点就把整块预览导航到洛谷官网，得重新双击才能回来；危险协议（`javascript:` 等）连去处都不显示。
+  与 Kotlin 侧 `sanitize()` 原本就剥 href 的口径一致。
+- 兜底那句话改成「JCEF **此刻**不可用…稍等重新双击这道题即可」，不再写「这台机器的 JCEF 不可用」——
+  按根因 1，那句话在启动早期是**假的**。
+
+### 你提的两处，处置不同（说清为什么）
+
+- **「懒建 browser」= 采纳**，就是上面第一条；`isPluginInstalled` / `findId("com.intellij.javake")` 那两行
+  在工作区里已经不存在（`grep -rn` 空），`javake` 与 JCEF 也无关。
+- **「`<depends>` 改 optional + config-file」= 不改**，三条理由：
+  ① 它是**运行时可用性**声明，不是编译期 classpath 开关 —— `compileKotlin` 现在就能编过
+  （`build.gradle.kts` 里 `intellij { modules = listOf("com.intellij.modules.jcef") }` 才是管 classpath 的那一处）；
+  ② 硬依赖不可能造成「JCEF 不可用」—— 模块真缺时 IDE 判依赖不满足，**整个插件不会加载**，
+  症状是「左侧找不到 ClionLuogu」而不是「题面是纯文本」；他的日志里插件正常加载（`1.8.1`）。
+  ③ 真改成 optional，`jcef-support.xml` 里就得放一份**不引用 `JBCefBrowser` 的预览面板**，
+  否则模块缺失时加载 PreviewPanel 直接 `NoClassDefFoundError` —— 那是把「加载不了」换成「加载了但预览整块没了」，
+  而现在这条路径已经有兜底（JEditorPane + 原文）。另外「`<depends>` 恰好 platform + jcef」是他自己定的长期约束。
+- **`@Volatile` 不加**：`browserCache` 只在 `browser()` / `dispose()` 里碰，而这两条都在 EDT 上 ——
+  `LuoguActions` 每个回调都是 `invokeLater { … }`（`grep` 24 处），不存在后台线程读到旧 null 的窗口。
+
+### 探针
+
+- `CoreProbe`：`previewHtmlRule()` 14 条 —— 一枚一个 `<p>`、旧的 span 形状不许回来、
+  分隔符在标记里、宿主 id 与载荷 id 成对、**兜底一个脚本都不嵌**、宿主里有原文、
+  `jsonLiteral` 把 `</script>` 写成 `<\/script>`（否则载荷提前闭合，后面整页脚本报废；
+  为此把 `jsonLiteral` 挪进 companion 让探针能直接钉）。**151 → 165 全绿**。
+- 新开 `probes/js-render-check.mjs`（14 条）：真的把 `marked.min.js` 载进 `node:vm` 沙箱跑 `renderMarkdown`，
+  断言 `[受信任的用户](…)` 变成 `<a>` 且没有 href、`- 列表` 变成 `<ul><li>`、
+  `$a_1 * b_2$` 原样交给 MathJax 且不长出 `<em>`、脚本与 `onerror` 被剥、`javascript:` 不可点也不显示去处。
+  `run.sh` 加了 `js` 套件：`LUOGU_NODE` → PATH → `~/.nvm/versions/node/*/bin/node` 依次找，
+  **找不到就在末尾明说「这部分等于没验证」**（1.8.0 两次假绿都是跳过不吭声）。
+  我这边的沙箱看不见 `~/.nvm`（`ls` 与执行都报不存在），所以这 14 条是我用 node-repl MCP `await import()` 那**同一份文件**跑的：
+  `JS 正文渲染探针：检查 14 条，失败 0 条`。他终端里 `node probes/js-render-check.mjs` 应当同样全绿。
+- `meta.py`：版本 1.8.2、change-notes 首条是 1.8.2 且 1.8.1 那条没丢、
+  Kotlin 与 JS 两侧 `data-luogu-md` 成对、题解原来的 DOM 契约（`luogu-solution` / `luogu-md`）没动、
+  代码里不许再出现 `private val browser` / `isPluginInstalled` / `javake` / `findId`、
+  发布包里 `solution-render.js` / `marked.min.js` / `tex-svg.js` 都在。
+  两条顺手修的真 bug：`inner[0]` 在版本号刚改还没 `buildPlugin` 时**直接崩**，看起来像「元数据没问题」；
+  断言被 KDoc 里引用的旧代码字样命中（懒建的反例正好写在注释里），改成只看代码行。
+
+### 只有他能验的
+
+JCEF 的延迟初始化窗口、marked 排版出来的实际观感、以及「链接摘了 href 之后 IDE 里点题面链接不再跳走」
+都只能在真实 IDE 里看；手点清单在交付那条消息里。
+
+**补一条硬证据（这一轮查的，关于「要不要把 `<depends>` 改成 optional」）**：
+`com/intellij/ui/jcef/JBCefBrowser.class` 与 `JBCefApp.class` **只在**
+`plugins/jcef-plugin/lib/modules/intellij.platform.ui.jcef.jar` 里 ——
+把 `Contents/lib/*.jar` 全扫了一遍，核心 jar 里一个都没有。
+所以「optional 依赖时 `JBCefBrowser` 类仍可解析」这个假设在这台发行包上不成立：
+模块没 loaded 时，任何引用它的类（我们的 `PreviewPanel` 就有 `browserCache: JBCefBrowser?` 字段）
+在链接阶段就 `NoClassDefFoundError`。真要做 graceful，必须把碰 JCEF 的那半边挪进
+`config-file="jcef-support.xml"`、主描述符里只留一份纯文本面板 —— 那是另开一轮 structural 改动，
+不是改一行 plugin.xml。
+反过来说：正因为现在是**硬依赖**，模块缺失时 IDE 直接不加载插件（症状是「找不到 ClionLuogu」），
+我们才敢在 `browser()` 里只问一句 `JBCefApp.isSupported()`。
+
+## 44. 1.8.2（第二批）：本地编译改用 CLion 选的编译器 + 「这台 mac 不是 GCC」检查 + 头文件按编译器走
+
+他两条需求：①「mac 且 CLion 编译器非 GCC 时提示 `brew install gcc` 然后使用；自测和对拍改成用 CLion 选的编译器」
+②「clang++ 就保持标准头，不是 clang++ 或不是 mac 就用 bits」。
+
+### 先把这台机器的编译器事实测出来（不测就会写错）
+
+| 可执行文件 | `--version` 首行 | 该怎么判 |
+| --- | --- | --- |
+| `/usr/bin/g++` | `Apple clang version 21.0.0 (clang-2100.3.34.2)` | **clang**（名字骗人） |
+| `/usr/bin/clang++` | `Apple clang version 21.0.0 (clang-2100.3.34.2)` | clang |
+| `/opt/homebrew/bin/g++-16` | `g++-16 (Homebrew GCC 16.2.0) 16.2.0` | **GCC**（他今天 19:53 才 `brew install gcc`） |
+
+实测编译（同一份 `#include <bits/stdc++.h>` + `accumulate`）：
+`g++-16` 编过并跑出 `3`；`clang++` 第一行就 `fatal error: 'bits/stdc++.h' file not found`。
+两条结论直接决定了实现：
+1. **身份只能按 `--version` 判，不能按文件名** —— 按名字认会把 `/usr/bin/g++` 当 GCC，于是给 clang 塞 bits；
+2. **brew 装完没有裸 `g++`**，只有 `g++-16` —— 提示文案必须写这句，否则他装完发现「还是没用」。
+
+### 编译器怎么找：读 CMakeCache，不碰 CLion 的 API
+
+`ClionToolchain` 只读 CMake 自己写的 `CMakeCache.txt`（项目根 + 一层子目录里最近修改的那份），
+取 `CMAKE_CXX_COMPILER`。CLion 的 profile / `-D` / 工具链选择最后都落到这一行，所以它就是
+「IDE 里到底用谁编的」；而 `com.jetbrains.cmake.*` 那些类在 CLion 自己的 bundled module 里，
+依赖它就得再往 `<depends>` 上加一层、把插件绑死在某个 CLion 版本上。
+解析时那几行同名前缀全要避开：注释行、`CMAKE_CXX_COMPILER-ADVANCED`、`_ARG1`、
+以及配置失败时的 `CMAKE_CXX_COMPILER-NOTFOUND`（这条要是不避，值就成了字符串 `CMAKE_CXX_COMPILER-NOTFOUND`）。
+
+`detect()` 的优先级：**设置里填的 > CLion 选的 > PATH/MinGW**。
+每一级都带出处（`Origin`），界面那一行写成 `编译器：clang++（Apple clang…）· CLion 选的 · 建议装 GCC`；
+后缀只 7 个字是因为**头部只有一行高**（1.7.1/1.7.2 两次被裁掉的都是第二行），全文在悬停里。
+「设置里填的不可用」这句话在**任何**回落路径上都得说（包括改用 CLion 的那一个）——
+静默换编译器是最难自己发现的那种错。
+
+### 检查与提醒
+
+判据抽成纯函数 `shouldRecommendGcc(isMac, flavor) = isMac && flavor != GCC`；
+`UNKNOWN` 也算「不是 GCC」（mac 上探测失败的基本就是系统那套 clang，而这条只是建议、不拦路）。
+通知**按编译器路径去重**、只发一次（`gccAdviceShownFor`），理由是：他换成 `g++-16` 之后这事就不成立了，
+而换回 clang 或 brew 升了版本号算**新情况**，值得再提一次。面板那行常驻，通知会被关掉而界面不会。
+
+### 头文件按编译器走，以及那个不对称
+
+`defaultCodeTemplate(isMac, flavor)`：mac 且不是 GCC → 标准头；其余 → bits。
+唯一跟他原话有出入的一处是**「还没探测到编译器时」**：我给的是标准头而不是 bits。
+不对称在这里——标准头在 GCC 上照样编得过（探针真编了一遍），bits 在 clang 上第一行就炸；
+拿不准时选那个「猜错也不出事」的。这条在 KDoc 和 change-notes 都写明了。
+
+另一处坑是自己造的：`codeTemplate` 的 getter 变成按编译器之后，设置页显示的是「当时那套默认」，
+而后台探测随时可能把 `lastFlavor` 换掉 → `isModified()` 以为他改过 → 他顺手点 Apply →
+那份旧默认被当成「自定义模板」存下来，从此**换编译器也不再换头文件**。
+所以 setter 里加了「内容等于任一份内置默认就不算自定义」。
+
+### 顺手抓到一条真 bug：`loadState` 漏镜像
+
+`LuoguSettings.loadState()` 抄了 6 个字段，**漏了 1.8.1 新加的 `wideScreenAdopted`**。
+写出去是好的（`options/clionluogu.xml` 里确有 `wideScreenLayoutAdopted=true`），读回来丢了。
+当时没暴雷是因为 IDE 自己把宽屏布局也持久化了（`options/ui.lnf.xml` 里 `WIDESCREEN_SUPPORT=true`），
+判据 `!currentlyWidescreen` 恰好还是 false；可只要他**自己关掉宽屏布局再重启**，
+插件就会再打开一次 —— 正是那段代码承诺过不干的事（跟他抢方向盘）。
+补了一行镜像，并加了 `settingsRoundTrip`：逐个字段写出去再读回来必须还一样，
+`meta.py` 里另有一条「每个 private 后备字段都必须出现在 loadState 里」的结构检查（防止下次又漏）。
+
+### 他追问出来的两个洞（都补了）
+
+1. **「第一次拉题时 `lastFlavor` 还是 UNKNOWN，于是永远先拿标准头」** —— 这个洞是真的。
+   他建议加 `ProjectActivity` 在项目打开时预探测；我做的是**在 `fetchAndGenerate` 的后台线程里、
+   切回 EDT 之前**补一次 `ensureCompilerFlavor(project)`（读 CMakeCache + 一次 `--version`，同一路径有缓存）。
+   理由：`generateFiles` 在 EDT 上、不能再起子进程，而拉题流程本身就在后台线程，顺手就能准备好；
+   启动预探测则每次打开项目都要付一次进程开销，而他可能这一整个 session 都不拉题。
+   两条都治这个洞，选便宜的那条。（底部运行栏第一次出现时 `probeCompareTarget` 也会准备一次，两边都覆盖到了。）
+2. **「换了 CLion 的编译器，界面还挂着旧编译器的探测结果」** —— 源码与样例一个字没动时，
+   每秒的签名看不出任何变化，「改了没用」会第三次发生。
+   签名加了第三项 `cache:<mtime>`（只 `stat`，绝不读内容），`CMakeCache.txt` 一变就重探。
+   为此把 `cacheFile` 改成**两段找、命中就早退**（先 `cmake-build*` 与项目根，再退到子目录广撒，
+   仍然有 80 个的上限、仍然不递归），免得每秒把项目根的子目录全 `stat` 一遍。
+   四个调用点统一走 `LocalRunSignature.ofProject(basePath, pid)`：
+   **每秒算的那串与探测回来后写 `diskSignature` 的那串必须是同一个口径**，
+   否则每秒都不相等 → 每秒重探 → 每秒抢滚动位置（1.7.4 那次的形状）。
+
+### 探针
+
+`CoreProbe` 165 → **230**：`compilerFlavorRule`（6 份真实 `--version` 首行 + 提醒的真值表 + 文案要点）、
+`clionCacheRule`（cache 文本的四个陷阱、多 profile 取最近修改、目录里没有 cache / null / 不存在都不炸）、
+`codeTemplateRule`（四种组合 + 「UNKNOWN 退回标准头」那个不对称 + bits 那份只有一行 include）、
+`settingsRoundTrip`（逐字段写出→读回，含「内置默认原样存回 ≠ 自定义」）、
+`compilerLineRule`（出处字样、后缀不吃掉前缀、回落说明优先于建议、PATH 兜底要解释原因）、
+`signatureStability` 里新增的 cache 那 7 条（cache 出现 / mtime 变 / 不存在的文件 / `ofProject` 同一口径）。
+`ProcessProbe` 34 → **57**：真起进程验优先级与回落报备、`lastFlavor` 跟着变、
+从真写的 cache 端到端读出可执行文件，以及**真编译**：`g++-16` 编过 bits 模板、
+同一份模板给 clang 必然失败且诊断里有那句提示、标准头在 GCC 上也编得过。
+这台机器没有 GCC 时那组打一行 `NOTICE`（大声跳过，不静默）—— 上一版「假绿」就是这么来的。
+`meta.py` 87 → **122**：多了一条**结构性**的「每个 `private var` 后备字段都必须出现在 `loadState` 里」
+（1.8.1 漏 `wideScreenAdopted` 那类 bug 从此不再是靠人记得住），
+以及 `ClionToolchain` 只 import `java.*`、面板不许残留两参数签名、
+`ensureCompilerFlavor` 必须排在 `invokeLater { generateFiles }` 之前。
+
+

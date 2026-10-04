@@ -36,8 +36,24 @@ object CompilerService {
         "bin/mingw/bin/gcc.exe",
     )
 
+    /**
+     * 编译器是谁：**只看 `--version` 的首行，不看文件名**。
+     *
+     * 文件名在这台 mac 上真的会骗：`/usr/bin/g++` 打印出来是
+     * `Apple clang version 21.0.0 (clang-2100.3.34.2)` —— 按名字认就把 clang 当成了 GCC，
+     * 于是拉题塞 `<bits/stdc++.h>`，本地第一行就 fatal error。
+     * 反方向同理：brew 的 GCC 叫 `g++-16 (Homebrew GCC 16.2.0) 16.2.0`，带版本号、没有裸 `g++`。
+     */
+    enum class Flavor { GCC, CLANG, UNKNOWN }
+
+    /** 这份编译器是哪来的，给用户看的那句话得区分（「CLion 选的那个」≠「PATH 上随便抓的」）。 */
+    enum class Origin { SETTINGS, CLION, PATH, NONE }
+
     /** 一个可用的编译器。[versionLine] 为 null 表示 `--version` 没跑通（仍然可以试着编译）。 */
     data class Compiler(val file: File, val versionLine: String?) {
+        /** 判出来的身份；探测失败是 [Flavor.UNKNOWN]，那时**什么都不该猜**（模板退回标准头）。 */
+        val flavor: Flavor get() = flavorOf(versionLine)
+
         /** 侧边栏那一行的短文案：优先版本首行的简短部分。 */
         fun display(): String {
             val v = versionLine?.takeIf { it.isNotBlank() }
@@ -49,7 +65,66 @@ object CompilerService {
     }
 
     /** 探测结果：要能区分「设置的覆盖路径不可用」和「这台机器真没编译器」。 */
-    data class Detected(val compiler: Compiler?, val overrideIgnored: String?)
+    data class Detected(
+        val compiler: Compiler?,
+        val overrideIgnored: String?,
+        val origin: Origin = Origin.NONE,
+    )
+
+    /** 编译器身份：先认 clang（Apple 那行不含 gcc），再认 GCC，都不认就是未知。 */
+    @JvmStatic
+    fun flavorOf(versionLine: String?): Flavor {
+        val line = versionLine?.trim().orEmpty().lowercase()
+        if (line.isEmpty()) return Flavor.UNKNOWN
+        if (line.contains("clang")) return Flavor.CLANG
+        if (line.contains("gcc") || line.contains("g++")) return Flavor.GCC
+        return Flavor.UNKNOWN
+    }
+
+    /** 这台机器是 macOS？（只有 mac 才有「系统自带的是 clang、GCC 得自己装」这件事。） */
+    @JvmStatic
+    fun isMac(): Boolean = System.getProperty("os.name").orEmpty().contains("Mac", ignoreCase = true)
+
+    /**
+     * 该不该提醒装 GCC：**mac 且现在用的不是 GCC**。
+     *
+     * [Flavor.UNKNOWN]（`--version` 没跑通）也算「不是 GCC」—— mac 上探测失败的基本就是系统那套 clang，
+     * 而这条只是建议、不拦路，宁可多提一次也别在这种机器上默认塞 bits。
+     * 非 mac（Linux、Windows 的 MinGW）不问：那边评测机同款的 GCC 本来就在。
+     */
+    @JvmStatic
+    fun shouldRecommendGcc(isMac: Boolean, flavor: Flavor): Boolean = isMac && flavor != Flavor.GCC
+
+    /**
+     * 提醒的正文，一处写完（通知与面板 tooltip 共用，改文案不会两边不一致）。
+     *
+     * 「装完是带版本号的名字、没有裸 `g++`」这句必须写：不然他装完了插件仍旧只能找到那个 clang 马甲，
+     * 回头只会说「装了没用」。
+     */
+    @JvmStatic
+    fun gccAdvice(compiler: Compiler?): String {
+        val who = compiler?.let { "${it.file.path}（${it.display()}）" } ?: "还没找到可用的编译器"
+        return "这台 Mac 上现在用的是 $who，不是 GCC。\n\n" +
+            "洛谷评测机是 GCC：clang 没有 <bits/stdc++.h>，标准库行为也与 GCC 有差别，" +
+            "「本地过了」不等于「评测机过」。\n\n" +
+            "装 GNU 编译器：brew install gcc\n" +
+            "装完的名字带版本号（例如 /opt/homebrew/bin/g++-16，brew 不给裸 g++），两条路任选：\n" +
+            "1. 让 CLion 用它：CMake 配置里加 -DCMAKE_CXX_COMPILER=/opt/homebrew/bin/g++-16，" +
+            "再重新配置一次项目（对拍与自测跟着 CLion 走）；\n" +
+            "2. 只在插件里用：设置「洛谷拉题 → 编译器」填上面那个绝对路径。\n\n" +
+            "不装也能用：拉题的头文件按编译器给（clang 给真实标准头，GCC 给 bits）。"
+    }
+
+    /**
+     * 最近一次探测出的身份，供**不能在后台等**的调用方读（拉题时决定塞哪套头文件）。
+     *
+     * 只有 [detect] 写它，而 [detect] 起子进程，所以只在后台线程调；拉题那条路在 EDT 上，
+     * 读这个 volatile 字段就够了。没探测过时是 [Flavor.UNKNOWN]，模板于是退回标准头 ——
+     * **这个方向错了也能编过**（标准头在 GCC 上照样能用），反过来（clang 上塞 bits）必炸。
+     */
+    @Volatile
+    var lastFlavor: Flavor = Flavor.UNKNOWN
+        private set
 
     /** 一次编译的结果。[diagnostic] 是合并了 stdout/stderr 的编译器原文。 */
     data class Outcome(
@@ -65,23 +140,40 @@ object CompilerService {
     private val versionCache = ConcurrentHashMap<String, String>()
 
     /**
-     * 找编译器：[overridePath]（设置页填的绝对路径）可用就用它，否则按 PATH + IDE 自带 MinGW 找。
-     * 覆盖路径不可用时会回落并在 [Detected.overrideIgnored] 里给出该显示给用户的一句话。
+     * 找编译器，优先级按**他实际在用的那一个**排：
+     * 1. [overridePath]（插件设置里填的绝对路径）—— 显式选择最大；
+     * 2. [clionPath]（[ClionToolchain] 从 `CMakeCache.txt` 读的 CLion 选的编译器）——
+     *    对拍与自测要跟他手写的构建一致，不然「IDE 里过、插件里炸」；
+     * 3. PATH 上的 clang++/g++/c++/clang 与 IDE 自带 MinGW —— 项目还没配置过 CMake 时的兜底。
+     *
+     * 覆盖路径不可用时会回落，并在 [Detected.overrideIgnored] 里给出该显示给用户的一句话。
      */
-    fun detect(overridePath: String?): Detected {
+    fun detect(overridePath: String?, clionPath: String? = null): Detected {
         val override = overridePath?.trim().orEmpty()
-        if (override.isEmpty()) return Detected(autoDetect(), null)
-
-        val file = File(override)
-        if (isExecutable(file)) return Detected(toCompiler(file), null)
-
-        val fallback = autoDetect()
-        val message = if (fallback == null) {
-            "设置里的编译器不可用：$override（本机也没自动找到别的）"
-        } else {
-            "设置里的编译器不可用（$override），已回落到 ${fallback.file.name}"
+        if (override.isNotEmpty()) {
+            val file = File(override)
+            if (isExecutable(file)) return finish(Compiler(file, versionOf(file)), Origin.SETTINGS)
         }
-        return Detected(fallback, message)
+        // 「设置里填的那个不可用」这句话在**任何**回落路上都要说：只换成 CLion 的那一个而不说，
+        // 他看到的就是「我填了没用、也没人告诉我为什么」。
+        val why = if (override.isEmpty()) null else "设置里的编译器不可用：$override"
+
+        val ide = clionPath?.trim().orEmpty().takeIf { it.isNotEmpty() }?.let(::File)
+        if (ide != null && isExecutable(ide)) {
+            return finish(toCompiler(ide), Origin.CLION, why?.let { "$it，已改用 CLion 项目实际用的那一个" })
+        }
+
+        val auto = autoDetect()
+        if (auto == null) {
+            return Detected(null, why?.let { "$it（CLion 那边没有可用的编译器，PATH 上也还没找到）" }, Origin.NONE)
+        }
+        return finish(auto, Origin.PATH, why?.let { "$it，已回落到 ${auto.file.name}" })
+    }
+
+    /** 统一在这里记账：[lastFlavor] 是拉题模板唯一会在 EDT 上读的字段。 */
+    private fun finish(compiler: Compiler, origin: Origin, notice: String? = null): Detected {
+        lastFlavor = compiler.flavor
+        return Detected(compiler, notice, origin)
     }
 
     private fun autoDetect(): Compiler? {

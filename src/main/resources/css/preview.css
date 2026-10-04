@@ -120,7 +120,13 @@ hr {
     margin: 16px 0;
 }
 
-/* 题面头部那组「难度 / 时间限制 / 内存限制 / 分数」：从 <b>x</b>：y<br/> 改成徽章条 */
+/*
+ * 题面头部那组「难度 / 时间限制 / 内存限制 / 分数」。
+ *
+ * 标记是 `<p class='chip'>`（不是 span）：JCEF 里下面这条 display 把它们收成一行徽章，
+ * 而 JEditorPane 丢 display 就退回「一行一枚」——两边都不粘连。键与值之间的「：」
+ * 写在标记里，所以连复制出来的纯文本都是「难度：普及-」。
+ */
 .meta {
     margin: 0 0 14px 0;
 }
@@ -138,8 +144,23 @@ hr {
 
 .chip b {
     font-weight: 600;
-    margin-right: 5px;
     color: @MUTED@;
+}
+
+/* 正文块：JCEF 里由 marked 填 HTML；没有 JCEF 时里面就是洛谷原文 */
+.md {
+    margin: 0 0 12px 0;
+}
+
+/* 兜底顶部那一句：要说清「现在没渲染」，别让原样文本看起来像 bug */
+.fallback-note {
+    padding: 4px 8px;
+    margin: 0 0 12px 0;
+    font-size: 12px;
+    color: @MUTED@;
+    background: @CODE_BG@;
+    border: 1px solid @BORDER@;
+    border-radius: 4px;
 }
 
 /* 作者 / 投票这类附属信息 */

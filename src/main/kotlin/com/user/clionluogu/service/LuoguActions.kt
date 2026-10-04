@@ -1,6 +1,8 @@
 package com.user.clionluogu.service
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
@@ -49,8 +51,19 @@ object LuoguActions {
                 invokeLater { onError(readableMessage(t)) }
                 return@executeOnPooledThread
             }
+            // 生成 .cpp 那一步在 EDT 上，而「塞哪套头文件」要先知道编译器是谁 ——
+            // 所以在这条后台线程里先把身份准备好（读 CLion 的编译器 + 一次 `--version`，同一路径有缓存）。
+            // 不准备的话第一次拉题永远落在 UNKNOWN 上，装着 brew gcc 的他第一次拉题就会拿到标准头。
+            ensureCompilerFlavor(project)
             invokeLater { generateFiles(project, pid, problem, onResult) }
         }
+    }
+
+    /** 准备好 [CompilerService.lastFlavor]，供 EDT 上的模板选择读；探测失败就留在 UNKNOWN（模板退回标准头）。 */
+    private fun ensureCompilerFlavor(project: Project) {
+        val base = runCatching { project.basePath }.getOrNull()?.let { File(it) }
+        val clion = runCatching { ClionToolchain.compiler(base) }.getOrNull()
+        CompilerService.detect(LuoguSettings.getInstance().compareCompilerPath, clion?.path)
     }
 
     /** 在 EDT 生成题目描述 md 与 .cpp/样例文件，并自动打开 cpp。 */
@@ -322,11 +335,13 @@ object LuoguActions {
     }
 
     /**
-     * 对拍页的探测：样例目录、要编译的源文件、以及可用的编译器。
+     * 对拍页与自测页的探测：样例目录、要编译的源文件、以及可用的编译器。
      * **全在后台线程**（`--version` 也是起子进程），回调切回 EDT。
      *
      * 这里刻意**不去找 `cmake-build` 里的产物**：产物名取决于 target 名，还得他先手动 Build，
      * 不如让 [CompilerService] 现场把 `Pxxx.cpp` 编出来——点一下就跑完。
+     * 但**编译器认 CLion 选的那一个**（从 `CMakeCache.txt` 读）：他 IDE 里用谁编的，插件就该用谁，
+     * 否则「IDE 里过、插件里炸」会变成新的谜。CLion 那边没有可用编译器时才退回 PATH。
      */
     fun probeCompareTarget(
         project: Project,
@@ -336,10 +351,20 @@ object LuoguActions {
         ApplicationManager.getApplication().executeOnPooledThread {
             val base = runCatching { project.basePath }.getOrNull()?.let { File(it) }
             val settings = LuoguSettings.getInstance()
-            val detected = CompilerService.detect(settings.compareCompilerPath)
+            val clion = ClionToolchain.compiler(base)
+            val detected = CompilerService.detect(settings.compareCompilerPath, clion?.path)
+            val advice = if (CompilerService.shouldRecommendGcc(CompilerService.isMac(), detected.compiler?.flavor
+                        ?: CompilerService.Flavor.UNKNOWN)
+            ) CompilerService.gccAdvice(detected.compiler) else null
             if (base == null || !base.isDirectory) {
                 invokeLater {
-                    onResult(CompareTarget(null, null, null, detected.compiler, detected.overrideIgnored))
+                    onResult(
+                        CompareTarget(
+                            null, null, null, detected.compiler, detected.overrideIgnored,
+                            origin = detected.origin, gccAdvice = advice,
+                        ),
+                    )
+                    notifyGccAdvice(project, detected.compiler, advice)
                 }
                 return@executeOnPooledThread
             }
@@ -359,10 +384,36 @@ object LuoguActions {
                         compilerNotice = detected.overrideIgnored,
                         problemLimits = limits,
                         meter = meter,
+                        origin = detected.origin,
+                        gccAdvice = advice,
                     ),
                 )
+                notifyGccAdvice(project, detected.compiler, advice)
             }
         }
+    }
+
+    /**
+     * 「这台 mac 用的不是 GCC」那条建议，**一个编译器路径只发一次**通知。
+     *
+     * 只在 EDT 调用（通知栏的事）。对拍与自测两个面板都会探测，所以去重记在应用级设置里
+     * （[LuoguSettings.gccAdviceShownFor]），谁先跑完谁发；面板上那行常驻的警告照旧每次都显示，
+     * 通知会被关掉而界面不会 —— 两条都要有才算说过。
+     */
+    private fun notifyGccAdvice(project: Project, compiler: CompilerService.Compiler?, advice: String?) {
+        if (advice == null) return
+        val settings = LuoguSettings.getInstance()
+        val key = compiler?.file?.absolutePath ?: "<none>"
+        if (settings.gccAdviceShownFor == key) return
+        settings.gccAdviceShownFor = key
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup("ClionLuogu.Notifications")
+            .createNotification(
+                "这台 Mac 上用的不是 GCC",
+                advice + "\n\n（这条只发一次；界面里「编译器」那一行随时悬停还能看到全文。）",
+                NotificationType.WARNING,
+            )
+            .notify(project)
     }
 
     /**
@@ -437,4 +488,8 @@ data class CompareTarget(
     val problemLimits: ProblemLimits.Limits = ProblemLimits.Limits(null, null),
     /** 峰值内存测量器；null = 这台机器量不到，界面要明说「不判 MLE」。 */
     val meter: ResourceMeter.Meter? = null,
+    /** 这份编译器是哪来的（CLion 选的 / 设置里填的 / PATH 找的），界面那一行要写明。 */
+    val origin: CompilerService.Origin = CompilerService.Origin.NONE,
+    /** 「这台 mac 用的不是 GCC，建议装」的全文；null = 不该提（非 mac，或本来就在用 GCC）。 */
+    val gccAdvice: String? = null,
 )

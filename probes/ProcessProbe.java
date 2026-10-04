@@ -1,5 +1,7 @@
 import com.intellij.openapi.progress.ProgressIndicator;
 
+import com.user.clionluogu.settings.LuoguSettings;
+import com.user.clionluogu.service.ClionToolchain;
 import com.user.clionluogu.service.CompilerService;
 import com.user.clionluogu.service.ProcessRunner;
 import com.user.clionluogu.service.ResourceMeter;
@@ -75,7 +77,7 @@ public class ProcessProbe {
     }
 
     static CompilerService.Compiler findCompiler() {
-        CompilerService.Detected d = CompilerService.INSTANCE.detect(null);
+        CompilerService.Detected d = CompilerService.INSTANCE.detect(null, null);
         return d.getCompiler();
     }
 
@@ -229,7 +231,132 @@ public class ProcessProbe {
                 String.valueOf(r10.getActualOutput()));
         }
 
+        compilerOrderRule(c);
+        gccBitsRule(c);
+
         System.out.println("=== 探针合计：" + pass + " 通过 / " + fail + " 失败 ===");
         Runtime.getRuntime().halt(fail == 0 ? 0 : 1);
+    }
+
+    /** 这台机器上**真的**是 GCC 的那一个：一律用 `--version` 判，不信文件名。找不到返回 null。 */
+    static File findRealGcc() {
+        java.util.List<String> dirs = new ArrayList<>();
+        String pathEnv = System.getenv("PATH");
+        for (String d : (pathEnv == null ? new String[0] : pathEnv.split(File.pathSeparator))) {
+            if (!d.trim().isEmpty() && !dirs.contains(d)) dirs.add(d);
+        }
+        for (String extra : new String[]{"/opt/homebrew/bin", "/usr/local/bin"}) {
+            if (!dirs.contains(extra)) dirs.add(extra);
+        }
+        java.util.List<String> names = new ArrayList<>(Arrays.asList("g++", "c++"));
+        // brew 装完是带版本号的（g++-16），Linux 上也有 g++-12 这种，全试一遍——判据是版本输出，不是名字
+        for (int v = 8; v <= 26; v++) {
+            names.add("g++-" + v);
+            names.add("c++-" + v);
+        }
+        for (String d : dirs) {
+            for (String n : names) {
+                File f = new File(d, n);
+                if (!f.isFile() || !f.canExecute()) continue;
+                CompilerService.Compiler cc = CompilerService.INSTANCE.detect(f.getAbsolutePath(), null).getCompiler();
+                if (cc != null && cc.getFlavor() == CompilerService.Flavor.GCC) return f;
+            }
+        }
+        return null;
+    }
+
+    /** 优先级与回落说明：设置里填的 > CLion 选的 > PATH 找的。 */
+    static void compilerOrderRule(CompilerService.Compiler clangFromPath) {
+        String clang = "/usr/bin/clang++";
+        boolean usable = new File(clang).isFile() && new File(clang).canExecute();
+        check("这一组要有 /usr/bin/clang++ 才验得了（没有就是这台机器不对，不是代码问题）", usable, clang);
+        if (!usable) return;
+
+        CompilerService.Detected a = CompilerService.INSTANCE.detect(null, clang);
+        check("CLion 那边有可用的编译器就用它", a.getOrigin() == CompilerService.Origin.CLION
+            && clang.equals(a.getCompiler().getFile().getAbsolutePath()), String.valueOf(a.getOrigin()));
+        check("判得出这是 clang", a.getCompiler().getFlavor() == CompilerService.Flavor.CLANG,
+            String.valueOf(a.getCompiler().getVersionLine()));
+        check("探测过之后 lastFlavor 跟着变（拉题选模板读的就是它）",
+            CompilerService.INSTANCE.getLastFlavor() == CompilerService.Flavor.CLANG,
+            String.valueOf(CompilerService.INSTANCE.getLastFlavor()));
+        check("一切正常时不该有回落说明", a.getOverrideIgnored() == null, String.valueOf(a.getOverrideIgnored()));
+        check("mac 上 clang 该提醒装 GCC", CompilerService.shouldRecommendGcc(
+            CompilerService.isMac(), a.getCompiler().getFlavor()), String.valueOf(CompilerService.isMac()));
+
+        CompilerService.Detected b = CompilerService.INSTANCE.detect("/bin/echo", clang);
+        check("设置里填的绝对路径优先于 CLion 选的", b.getOrigin() == CompilerService.Origin.SETTINGS,
+            String.valueOf(b.getOrigin()));
+        check("填的是 /usr/bin/g++ 这种 clang 马甲时，身份仍按 --version 判",
+            CompilerService.flavorOf("Apple clang version 21.0.0 (clang-2100.3.34.2)") == CompilerService.Flavor.CLANG, "");
+
+        CompilerService.Detected c = CompilerService.INSTANCE.detect("/definitely/not/here", clang);
+        check("填的路径不可用时改用 CLion 的那一个", c.getOrigin() == CompilerService.Origin.CLION,
+            String.valueOf(c.getOrigin()));
+        check("并且说明为什么没生效（不许静默换编译器）",
+            c.getOverrideIgnored() != null && c.getOverrideIgnored().contains("设置里的编译器不可用"),
+            String.valueOf(c.getOverrideIgnored()));
+        check("回落说明要点出新用的是哪个",
+            c.getOverrideIgnored() != null && c.getOverrideIgnored().contains("CLion 项目实际用的"),
+            String.valueOf(c.getOverrideIgnored()));
+
+        CompilerService.Detected d = CompilerService.INSTANCE.detect(null, "/definitely/not/here");
+        check("CLion 那条不可用时退回 PATH", d.getOrigin() == CompilerService.Origin.PATH && d.getCompiler() != null,
+            String.valueOf(d.getOrigin()));
+        check("这种回落不是他的错，不写「设置里的不可用」", d.getOverrideIgnored() == null,
+            String.valueOf(d.getOverrideIgnored()));
+
+        // 端到端：真写一份 CMakeCache 到临时目录，读回来的就是那个可执行的 clang
+        try {
+            File cache = new File(dir, "CMakeCache.txt");
+            Files.write(cache.toPath(), ("CMAKE_CXX_COMPILER:FILEPATH=" + clang + "\n").getBytes(StandardCharsets.UTF_8));
+            File resolved = ClionToolchain.compiler(dir);
+            check("从真实 cache 读出可执行的编译器", resolved != null && clang.equals(resolved.getPath()),
+                String.valueOf(resolved));
+            File broken = new File(dir, "CMakeCache.txt");
+            Files.write(broken.toPath(), "CMAKE_CXX_COMPILER:FILEPATH=/no/such/g++\n".getBytes(StandardCharsets.UTF_8));
+            check("cache 里那个路径不在磁盘上时退回 null（再由 detect 落到 PATH）",
+                ClionToolchain.compiler(dir) == null, String.valueOf(ClionToolchain.compiler(dir)));
+            Files.write(broken.toPath(), "CMAKE_BUILD_TYPE:STRING=Debug\n".getBytes(StandardCharsets.UTF_8));
+            check("cache 里根本没这一行也是 null", ClionToolchain.compiler(dir) == null, "");
+        } catch (Exception e) {
+            check("cache 端到端没抛异常", false, String.valueOf(e));
+        }
+    }
+
+    /**
+     * bits 模板必须在**它要被给的那台编译器**上真编得过。
+     *
+     * 这条是整组里唯一真起编译的：模板写错、或判据反过来（把 bits 给了 clang），
+     * 只有真编一遍才会响。这台机器没有 GCC 时大声打一行 NOTICE（不静默跳，也不报错）。
+     */
+    static void gccBitsRule(CompilerService.Compiler clang) throws Exception {
+        File gccFile = findRealGcc();
+        if (gccFile == null) {
+            System.out.println("NOTICE 这台机器上没有真 GCC（没装 brew gcc 之类）：bits 模板这一组没跑，不等于通过");
+            return;
+        }
+        CompilerService.Compiler gcc =
+            CompilerService.INSTANCE.detect(gccFile.getAbsolutePath(), null).getCompiler();
+        check("找到一个真 GCC：" + gccFile.getName(), gcc.getFlavor() == CompilerService.Flavor.GCC,
+            String.valueOf(gcc.getVersionLine()));
+        check("已经在用 GCC 就不该再提醒装", !CompilerService.shouldRecommendGcc(CompilerService.isMac(), gcc.getFlavor()), "");
+        check("GCC 那边默认模板就是 bits",
+            LuoguSettings.defaultCodeTemplate(CompilerService.isMac(), CompilerService.Flavor.GCC)
+                .equals(LuoguSettings.BITS_CODE_TEMPLATE), "");
+
+        File exe = compile(gcc, "bits_gcc.cpp", LuoguSettings.BITS_CODE_TEMPLATE + "\n");
+        check("GCC 真能编过插件给它的 bits 模板", exe != null && exe.isFile(), String.valueOf(exe));
+
+        File src = write("bits_clang.cpp", LuoguSettings.BITS_CODE_TEMPLATE + "\n");
+        CompilerService.Outcome bad = CompilerService.INSTANCE.compile(
+            clang.getFile(), src, new File(dir, "bits_clang"),
+            Arrays.asList("-std=c++17"), new AtomicBoolean(false));
+        check("同一份 bits 给 clang 必然失败（所以模板必须按编译器给）", !bad.getOk(), bad.getDiagnostic());
+        check("失败诊断里有那句「换成真实标准头」的提示",
+            bad.getDiagnostic().contains("bits") && bad.getDiagnostic().contains("提示"), bad.getDiagnostic());
+        // 反过来：标准头模板在 GCC 上照样编得过 —— 这就是 UNKNOWN 退回标准头的那个不对称
+        File ok = compile(gcc, "plain_gcc.cpp", LuoguSettings.DEFAULT_CODE_TEMPLATE + "\n");
+        check("标准头模板在 GCC 上也编得过（所以拿不准时退回它是安全的）", ok != null && ok.isFile(), String.valueOf(ok));
     }
 }

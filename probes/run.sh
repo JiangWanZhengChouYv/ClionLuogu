@@ -10,6 +10,7 @@
 #   bash probes/run.sh process    # 只跑真子进程（要本机有 clang++/g++）
 #   bash probes/run.sh layout     # 只跑布局（要有显示器，不能 headless）
 #   bash probes/run.sh meta       # 只跑元数据（python）
+#   bash probes/run.sh js         # 只跑浏览器侧正文渲染（需要 node：PATH / nvm / LUOGU_NODE）
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,7 +65,10 @@ if [ "${PROBE_SKIP_BUILD:-0}" != "1" ]; then
 fi
 
 SUITES=("${@:-all}")
-[ "${SUITES[0]}" = "all" ] && SUITES=(core process layout meta)
+[ "${SUITES[0]}" = "all" ] && SUITES=(core process layout meta js)
+
+# 没跑的套件要记下来、最后喊一遍：1.8.0 两次「假绿」都是因为跳过不吭声
+SKIPPED=""
 
 javac_failed=0
 for f in CoreProbe ProcessProbe LayoutProbe; do
@@ -109,9 +113,28 @@ for s in "${SUITES[@]}"; do
       echo "--- meta.py:"
       python3 "$PROBE_DIR/meta.py" | tail -3
       ;;
-    *) echo "未知套件：$s（core / process / layout / meta）" ;;
+    js)
+      # 他的 node 在 ~/.nvm/versions/node/v24.11.1/bin（PATH 第 3 项，由 ~/.zshrc 的 nvm 初始化加进去），
+      # 交互 shell 里 `command -v node` 就有；非交互 shell（cron、我的沙箱）没有，所以再兜一次 nvm 目录。
+      NODE_BIN="${LUOGU_NODE:-$(command -v node 2>/dev/null || true)}"
+      [ -z "$NODE_BIN" ] && NODE_BIN="$(ls -d "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)"
+      [ -z "$NODE_BIN" ] && NODE_BIN="/opt/homebrew/bin/node"   # 他装过 brew node 的话
+      if [ -n "$NODE_BIN" ] && [ -x "$NODE_BIN" ]; then
+        jout="$OUT/js.out"
+        "$NODE_BIN" "$PROBE_DIR/js-render-check.mjs" > "$jout" 2>&1
+        echo "--- js-render-check: $(grep '检查 ' "$jout" | tail -1)"
+        grep "^FAIL" "$jout" | head -12
+        grep -q "失败 0 条" "$jout" || total_fail=$((total_fail + 1))
+      else
+        SKIPPED="$SKIPPED js-render-check.mjs"
+        echo "!! 没跑 js-render-check.mjs：PATH 里找不到 node（设 LUOGU_NODE=<node 路径> 再跑）"
+      fi
+      ;;
+    *) echo "未知套件：$s（core / process / layout / meta / js）" ;;
   esac
 done
+
+[ -n "$SKIPPED" ] && echo "!! 以下套件本轮没跑：$SKIPPED —— 那部分等于没验证"
 
 echo "=== Java 断言合计：$total_pass 通过 / $total_fail 失败（元数据与布局不计入） ==="
 [ "$total_fail" -eq 0 ] || exit 1

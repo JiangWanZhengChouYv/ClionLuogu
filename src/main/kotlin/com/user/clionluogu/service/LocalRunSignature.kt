@@ -14,9 +14,17 @@ import java.io.File
  */
 object LocalRunSignature {
 
-    /** 源文件与样例目录的现况签名。两处都拿不到时是稳定串（不会每秒触发重探）。 */
+    /**
+     * 源文件、样例目录，以及 **CMakeCache** 的现况签名。三处都拿不到时是稳定串（不会每秒触发重探）。
+     *
+     * 第三个是 1.8.2 加的：对拍与自测现在用的是 CLion 选的编译器，而那个选择只写在 `CMakeCache.txt` 里。
+     * 他在 CMake 配置里从 clang 换成 `g++-16` 之后，源码与样例一个字都没动 —— 若签名不看 cache，
+     * 界面就继续挂着旧编译器的探测结果，等他改一行代码才刷新，
+     * 症状跟他报过两次的「改了没用」一模一样。
+     */
     @JvmStatic
-    fun of(sourceFile: File?, samplesDir: File?): String {
+    @JvmOverloads
+    fun of(sourceFile: File?, samplesDir: File?, cacheFile: File? = null): String {
         val src = sourceFile?.let { if (it.isFile) "src:${it.length()}" else "src:0" } ?: "src:none"
         val dir = samplesDir?.let { d ->
             if (!d.isDirectory) "dir:none"
@@ -26,8 +34,18 @@ object LocalRunSignature {
                 "dir:$count:${d.lastModified()}"
             }
         } ?: "dir:none"
-        return "$src|$dir"
+        // cache 只 stat 修改时间（这一串每秒都要算，绝不读内容）
+        val cache = cacheFile?.let { if (it.isFile) "cache:${it.lastModified()}" else "cache:none" } ?: "cache:none"
+        return "$src|$dir|$cache"
     }
+
+    /** 面板每秒用的那一个入口：项目根 + 题号 → 三项签名。 */
+    @JvmStatic
+    fun ofProject(basePath: String?, pid: String): String = of(
+        sourceFile(basePath, pid),
+        samplesDir(basePath, pid),
+        ClionToolchain.cacheFile(basePath?.takeIf { it.isNotBlank() }?.let(::File)),
+    )
 
     /** 项目根下这道题的源文件（与 [LuoguActions.probeCompareTarget] 认的同一个路径）。 */
     @JvmStatic

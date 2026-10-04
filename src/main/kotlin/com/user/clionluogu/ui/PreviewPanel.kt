@@ -1,8 +1,6 @@
 package com.user.clionluogu.ui
 
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.JBColor
@@ -92,12 +90,18 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     private val solutionButton = JButton("题解")
     private val moreButton = JButton("加载更多")
     private val solutionModel = DefaultComboBoxModel<SolutionSummary>()
-    private val browser: JBCefBrowser? = createBrowser()
+    /** 懒建：构造期那次探测失败不该把 JCEF 永久判死（下面 [browser] 会再问一次）。 */
+    private var browserCache: JBCefBrowser? = null
+
+    /** 正文占位：JCEF 可用时挂浏览器，不可用时挂纯文本兜底。两边切换靠 [present]。 */
+    private val contentHost = JPanel(BorderLayout())
+
     private val fallbackArea = JEditorPane().apply {
         isEditable = false
         contentType = "text/html"
         border = JBUI.Borders.empty(6)
     }
+    private val fallbackScroll = JBScrollPane(fallbackArea)
 
     /** 题面模式的渲染依据；为空时「题面」按钮只提示不渲染。 */
     private var currentProblem: LuoguProblemDto? = null
@@ -154,12 +158,7 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
         val center = JPanel(BorderLayout()).apply {
             add(solutionListPanel, BorderLayout.NORTH)
-            val component = browser?.component
-            if (component != null) {
-                add(component, BorderLayout.CENTER)
-            } else {
-                add(JBScrollPane(fallbackArea), BorderLayout.CENTER)
-            }
+            add(contentHost, BorderLayout.CENTER)
         }
         add(center, BorderLayout.CENTER)
 
@@ -169,16 +168,29 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         applyModeToToolbar()
     }
 
-    private fun createBrowser(): JBCefBrowser? = try {
-        if (PluginManagerCore.isPluginInstalled(PluginId.getId("com.intellij.modules.jcef")) &&
-            JBCefApp.isSupported()
-        ) JBCefBrowser() else null
-    } catch (_: Throwable) {
-        null
+    /**
+     * 有没有 JCEF：**只问 [JBCefApp.isSupported]，而且问到能用为止**。
+     *
+     * 他这台 CLion 的 JCEF 是真有的 —— 原生件在 `Contents/plugins/jcef-plugin/jcef`
+     * （2026.x 把它从 JBR 挪进了插件目录，所以在 JBR 里搜 jcef 搜不到，别据此判死），
+     * 日志里 `JBCefApp` 打出过 `jcef version: remote_144.0.15.3416`。
+     * 那为什么原来是纯文本兜底？看 `jcef-plugin.jar/META-INF/plugin.xml`：
+     * `JBCefStartup`（真正把 JCEF 拉起的那个 applicationService）挂在**延迟加载的模块**
+     * `intellij.platform.ui.jcef` 上，`preload="notHeadless"` —— 日志里它要到启动后 **4~5 秒**才初始化。
+     * 而工具窗口面板是启动时就建的，旧写法 `private val browser = if (...) JBCefBrowser() else null`
+     * 是**字段初始化**：那一句问得太早，答 false 之后整个面板生命周期都定死了。
+     * 现在改成要用正文时才问、问到 true 为止（顺带删掉多余的 `isPluginInstalled` 那一句：
+     * 模块真缺的话 `<depends>` 就让插件根本加载不了，不会走到这里）。
+     */
+    private fun browser(): JBCefBrowser? {
+        browserCache?.let { return it }
+        if (!runCatching { JBCefApp.isSupported() }.getOrDefault(false)) return null
+        return runCatching { JBCefBrowser().also { browserCache = it } }.getOrNull()
     }
 
     override fun dispose() {
-        browser?.dispose()
+        browserCache?.dispose()
+        browserCache = null
     }
 
     fun showProblem(problem: LuoguProblemDto) {
@@ -292,11 +304,36 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
         present("<html><body>${escapeHtml(text)}</body></html>")
     }
 
+    /**
+     * 挂载正文视图并送 HTML。
+     *
+     * 两个方向都要能切：JCEF 一旦建起来就常驻（反复装卸 CEF 组件比反复 loadHTML 贵得多），
+     * 而兜底那条路**必须把提示插在 HTML 里**——否则纯文本渲染下 Markdown 原样显示，
+     * 他会以为是我们没解析，而不是「这台机器没有 JCEF」。
+     */
     private fun present(html: String) {
-        browser?.loadHTML(html) ?: run {
-            fallbackArea.text = html
-            fallbackArea.caretPosition = 0
+        val view = browser()
+        if (view != null) {
+            if (contentHost.components.firstOrNull() !== view.component) {
+                contentHost.removeAll()
+                contentHost.add(view.component, BorderLayout.CENTER)
+                contentHost.revalidate()
+                contentHost.repaint()
+            }
+            view.loadHTML(html)
+            return
         }
+        if (contentHost.components.firstOrNull() !== fallbackScroll) {
+            contentHost.removeAll()
+            contentHost.add(fallbackScroll, BorderLayout.CENTER)
+            contentHost.revalidate()
+        }
+        fallbackArea.text = html.replace(
+            "<body>",
+            "<body><p class='fallback-note'>纯文本渲染：JCEF 此刻不可用，Markdown 与公式没有渲染。" +
+                "刚打开 IDE 时 JCEF 要几秒才初始化完，稍等重新双击这道题即可。</p>",
+        )
+        fallbackArea.caretPosition = 0
     }
 
     /** 文档骨架：主题样式 + 内置 MathJax；调用方往返回值里追加正文，最后交给 [endHtml] 收尾。 */
@@ -328,31 +365,41 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
 
     private fun buildProblemHtml(problem: LuoguProblemDto): String {
         val sb = startHtml()
+        val usesJcef = browser() != null
         sb.append("<h1>").append(escapeHtml(problem.pid)).append(" ")
             .append(escapeHtml(problem.name)).append("</h1>")
 
         val time = problem.limits.time.firstOrNull()
         val memory = problem.limits.memory.firstOrNull()
-        // 徽章条：原来是四行 `<b>标签</b>：值<br/>`，在窄面板里像一张没边框的表
-        sb.append("<div class=\"meta\">")
-        sb.append("<span class=\"chip\"><b>难度</b>")
-            .append(escapeHtml(difficultyText(problem.difficulty))).append("</span>")
-        sb.append("<span class=\"chip\"><b>时间限制</b>")
-            .append(time?.let { "$it ms" } ?: "暂无").append("</span>")
-        sb.append("<span class=\"chip\"><b>内存限制</b>")
-            .append(memory?.let { "$it KB" } ?: "暂无").append("</span>")
-        sb.append("<span class=\"chip\"><b>分数</b>").append(problem.fullScore).append("</span>")
-        sb.append("</div>")
+        // 元信息用「一行一枚 + 标记里带分隔符」，理由见 [metaChipsHtml]
+        sb.append(
+            metaChipsHtml(
+                listOf(
+                    "难度" to difficultyText(problem.difficulty),
+                    "时间限制" to (time?.let { "$it ms" } ?: "暂无"),
+                    "内存限制" to (memory?.let { "$it KB" } ?: "暂无"),
+                    "分数" to problem.fullScore.toString(),
+                ),
+            ),
+        )
 
         val body = problem.content ?: problem.contenu
         if (body == null) {
             sb.append("<p>暂无题目描述</p>")
         } else {
-            body.section("background")?.let { sb.append("<h2>题目背景</h2>").append(it) }
-            body.section("description")?.let { sb.append("<h2>题目描述</h2>").append(it) }
-            body.section("formatI")?.let { sb.append("<h2>输入格式</h2>").append(it) }
-            body.section("formatO")?.let { sb.append("<h2>输出格式</h2>").append(it) }
-            body.section("hint")?.let { sb.append("<h2>提示</h2>").append(it) }
+            sb.append(
+                bodyBlocksHtml(
+                    listOfNotNull(
+                        body.section("background")?.let { "题目背景" to it },
+                        body.section("description")?.let { "题目描述" to it },
+                        body.section("formatI")?.let { "输入格式" to it },
+                        body.section("formatO")?.let { "输出格式" to it },
+                        body.section("hint")?.let { "提示" to it },
+                    ),
+                    usesJcef = usesJcef,
+                    literal = { text -> jsonLiteral(text) },
+                ),
+            )
         }
 
         problem.samples.forEachIndexed { index, sample ->
@@ -365,15 +412,17 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
                 .append(escapeHtml(output)).append("</pre>")
         }
 
+        rendererScripts(sb, usesJcef)
         return endHtml(sb)
     }
 
     /** 单篇题解：标题 + 元信息 + 正文。 */
     private fun buildSolutionHtml(solution: SolutionSummary): String {
         val sb = startHtml()
+        val usesJcef = browser() != null
         sb.append("<h1>").append(escapeHtml(solution.title)).append("</h1>")
-        sb.append("<div class=\"byline\"><span class=\"chip\"><b>作者</b>")
-            .append(escapeHtml(solution.author ?: "佚名")).append("</span>")
+        sb.append("<div class=\"byline\">")
+            .append("<p class=\"chip\"><b>作者</b>：").append(escapeHtml(solution.author ?: "佚名")).append("</p>")
         solution.upvote?.let { sb.append("<span class=\"votes\">↑ ").append(it).append("</span>") }
         sb.append("</div>")
 
@@ -382,29 +431,31 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
             sb.append("<p>该题解没有正文内容</p>")
             return endHtml(sb)
         }
-        if (browser == null) {
+        if (!usesJcef) {
             // 没有 JCEF 就跑不了 marked，只能按原文展示（至少内容可读）
             sb.append("<pre>").append(escapeHtml(markdown)).append("</pre>")
             return endHtml(sb)
         }
-        sb.append("<div id=\"luogu-solution\"></div>")
+        sb.append("<div id=\"luogu-solution\">").append(escapeHtml(markdown)).append("</div>")
         sb.append("<script id=\"luogu-md\" type=\"application/json\">")
             .append(jsonLiteral(markdown))
             .append("</script>")
-        if (MARKED_JS.isNotEmpty()) sb.append("<script>").append(MARKED_JS).append("</script>")
-        if (SOLUTION_RENDER_JS.isNotEmpty()) {
-            sb.append("<script>").append(SOLUTION_RENDER_JS).append("</script>")
-        }
+        rendererScripts(sb, usesJcef)
         return endHtml(sb)
     }
 
     /**
-     * 字符串 → JSON 字面量（题解正文用它传入浏览器侧）。
+     * marked 与渲染脚本：只在 JCEF 路径注入。
      *
-     * 额外把 `</` 写成 `<\/`：JSON/JS 里二者等价，但正文若含 `</script>` 会把元素提前闭合。
+     * 顺序有讲究 —— marked 先定义 `window.marked`，[SOLUTION_RENDER_JS] 的 boot() 是同步内联脚本，
+     * 解析到就跑；MathJax 的 typeset 在 [endHtml] 里挂在 startup.promise 之后，所以公式一定在
+     * Markdown 落好之后才排版。兜底那条路不能带这两个：JEditorPane 会把脚本内容当正文打印出来。
      */
-    private fun jsonLiteral(text: String): String =
-        Json.encodeToString(String.serializer(), text).replace("</", "<\\/")
+    private fun rendererScripts(sb: StringBuilder, usesJcef: Boolean) {
+        if (!usesJcef) return
+        if (MARKED_JS.isNotEmpty()) sb.append("<script>").append(MARKED_JS).append("</script>")
+        if (SOLUTION_RENDER_JS.isNotEmpty()) sb.append("<script>").append(SOLUTION_RENDER_JS).append("</script>")
+    }
 
     /**
      * 主题化样式：规则在 <code>resources/css/preview.css</code> 里，这里只按当前 IDE 主题
@@ -494,6 +545,57 @@ class PreviewPanel(private val project: Project) : JPanel(BorderLayout()), Dispo
     companion object {
         /** 题解列表条的高度：够露出几篇标题可点，又不挤掉正文。 */
         private const val LIST_HEIGHT = 120
+
+        /**
+         * 元信息一行一枚：`<p>` 而不是 `<span>`，键与值之间带「：」。
+         *
+         * 两处都要活：JCEF 里 CSS 把 `<p>` 收成 inline-block，是一排徽章；
+         * 没有 JCEF 时 JEditorPane 只认 CSS 2.1（丢 display、丢 margin），于是退回一行一枚。
+         * 而**复制**走的是纯文本 —— 原来 `<span><b>难度</b>普及-</span>` 粘在一起
+         * 就是他从 B2002 复制出「难度普及-时间限制1000 ms内存限制…」的原因，
+         * 所以分隔符必须写进标记本身，不能指望 CSS。
+         */
+        @JvmStatic
+        fun metaChipsHtml(cells: List<Pair<String, String>>): String =
+            cells.joinToString(prefix = "<div class='meta'>", postfix = "</div>") { (key, value) ->
+                "<p class='chip'><b>$key</b>：$value</p>"
+            }
+
+        /**
+         * 正文分段：每段一个标题 + 一块 Markdown。
+         *
+         * JCEF 在时才嵌 JSON 载荷（脚本会把它渲染成 HTML，`[文字](链接)` 与 `- 列表` 都能变成真的排版）；
+         * 兜底路径不嵌 —— JEditorPane 会把 `<script>` 里的 JSON 当文字打印出来，那比不渲染更糟。
+         */
+        @JvmStatic
+        fun bodyBlocksHtml(
+            blocks: List<Pair<String, String>>,
+            usesJcef: Boolean,
+            literal: (String) -> String,
+        ): String = blocks.mapIndexed { index, (heading, raw) ->
+            val id = "luogu-md-$index"
+            buildString {
+                append("<h2>").append(heading).append("</h2>")
+                append("<div class='md' data-luogu-md='").append(id).append("'>")
+                append(raw)
+                append("</div>")
+                if (usesJcef) {
+                    append("<script id='").append(id).append("' type='application/json'>")
+                        .append(literal(raw))
+                        .append("</script>")
+                }
+            }
+        }.joinToString("")
+
+        /**
+         * 字符串 → JSON 字面量（题面与题解正文都用它传入浏览器侧）。
+         *
+         * 额外把 `</` 写成 `<\/`：JSON/JS 里二者等价，但正文若含 `</script>` 会把载荷元素提前闭合，
+         * 后面整页脚本随之报废 —— 所以这条规矩得有探针钉着（[jsonLiteral] 因此放在 companion 里）。
+         */
+        @JvmStatic
+        fun jsonLiteral(text: String): String =
+            Json.encodeToString(String.serializer(), text).replace("</", "<\\/")
 
         private fun resourceText(path: String): String =
             PreviewPanel::class.java.getResourceAsStream(path)?.bufferedReader()?.use { it.readText() } ?: ""

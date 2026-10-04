@@ -1,4 +1,5 @@
 import com.user.clionluogu.service.CompileErrorLocator;
+import com.user.clionluogu.service.ClionToolchain;
 import com.user.clionluogu.service.CompilerService;
 import com.user.clionluogu.service.CompareTarget;
 import com.user.clionluogu.service.JumpMiss;
@@ -10,12 +11,15 @@ import com.user.clionluogu.service.ResourceMeter;
 import com.user.clionluogu.service.SampleDiff;
 import com.user.clionluogu.service.SampleSetService;
 import com.user.clionluogu.service.SelfTestService;
+import com.user.clionluogu.settings.LuoguSettings;
 import com.user.clionluogu.ui.BlockText;
 import com.user.clionluogu.ui.CodeOrigin;
+import com.user.clionluogu.ui.CompilerLine;
 import com.user.clionluogu.ui.DetailPanel;
 import com.user.clionluogu.ui.WideLayout;
 import com.user.clionluogu.ui.LimitFields;
 import com.user.clionluogu.ui.DetailSection;
+import com.user.clionluogu.ui.PreviewPanel;
 import com.user.clionluogu.ui.SampleComparePanel;
 import com.user.clionluogu.ui.SelfTestPanel;
 import com.user.clionluogu.ui.StatusRow;
@@ -65,8 +69,10 @@ public class CoreProbe {
     }
 
     static CompareTarget target(SampleSetService.Found f, String source, CompilerService.Compiler c) {
+        // Kotlin 的默认参数在 Java 侧不生效（没有 @JvmOverloads），所以九个字段全写出来
         return new CompareTarget("/base", f, source, c, null,
-            new com.user.clionluogu.service.ProblemLimits.Limits(null, null), null);
+            new com.user.clionluogu.service.ProblemLimits.Limits(null, null), null,
+            CompilerService.Origin.NONE, null);
     }
 
     static ProcessRunner.Outcome run(String stdout, String stderr, Integer exit, long ms,
@@ -111,6 +117,12 @@ public class CoreProbe {
         statusRowRule();
         limitFieldsRule();
         wideLayoutRule();
+        previewHtmlRule();
+        compilerFlavorRule();
+        clionCacheRule();
+        codeTemplateRule();
+        settingsRoundTrip();
+        compilerLineRule();
 
         System.out.println("=== 探针合计：" + pass + " 通过 / " + fail + " 失败 ===");
         Runtime.getRuntime().halt(fail == 0 ? 0 : 1);
@@ -463,6 +475,29 @@ public class CoreProbe {
             check("文件不在了也能给出稳定签名",
                 LocalRunSignature.of(missing, null).equals(LocalRunSignature.of(missing, null)), "变了");
             check("目录当文件用也不抛", LocalRunSignature.of(dirAsFile(), null) != null, "抛了");
+
+            // 1.8.2：换了 CLion 的编译器（只有 CMakeCache 的 mtime 变）也必须触发重探，
+            // 否则源码一个字没动时界面会一直挂着旧编译器的探测结果 —— 他报过两次的那个「改了没用」
+            java.nio.file.Path sigRoot = Files.createTempDirectory("probe-sig-cache");
+            File cache = sigRoot.resolve("CMakeCache.txt").toFile();
+            Files.write(cache.toPath(), "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++\n".getBytes("UTF-8"));
+            String withCache = LocalRunSignature.of(tmp, null, cache);
+            check("没有 cache 时带 cache:none（而不是干脆不管）",
+                LocalRunSignature.of(tmp, null).endsWith("|cache:none"), LocalRunSignature.of(tmp, null));
+            check("cache 一出现签名就变", !withCache.equals(LocalRunSignature.of(tmp, null)), "没变");
+            check("同一份 cache 没动就不重探", withCache.equals(LocalRunSignature.of(tmp, null, cache)), "变了");
+            long bumped = cache.lastModified() + 5_000L;
+            cache.setLastModified(bumped);
+            check("换成另一个编译器（cache 的 mtime 变了）就重探",
+                !LocalRunSignature.of(tmp, null, cache).equals(withCache), "还在用旧编译器的探测结果");
+            check("cache 指向不存在的文件时也算 none",
+                LocalRunSignature.of(tmp, null, new File("/没有这个/CMakeCache.txt")).endsWith("|cache:none"), "");
+            check("ofProject 走的是同一套（三项都在串里）",
+                LocalRunSignature.ofProject(sigRoot.toString(), "P1001").contains("|cache:"),
+                LocalRunSignature.ofProject(sigRoot.toString(), "P1001"));
+            check("项目没落盘 / 题号空都不抛",
+                LocalRunSignature.ofProject(null, "P1001").equals(LocalRunSignature.ofProject(null, "P1001"))
+                    && LocalRunSignature.ofProject("/base", "").contains("cache:none"), "");
         } catch (Exception e) {
             check("签名测试能建临时文件", false, e.toString());
         }
@@ -538,6 +573,259 @@ public class CoreProbe {
         check("已经是宽屏 → 不碰", !WideLayout.shouldApply(true, false), "多此一举");
         check("我们动过、他后来关了 → 绝不再打开", !WideLayout.shouldApply(false, true), "跟他抢方向盘");
         check("动过且现在是宽屏 → 也不重复设置", !WideLayout.shouldApply(true, true), "重复写");
+    }
+
+    // ---- 编译器身份：只看 --version 首行，不看文件名（mac 上 /usr/bin/g++ 其实是 clang）----
+
+    static void compilerFlavorRule() {
+        check("Apple clang 认成 clang（这行里根本没有 gcc 字样）",
+            CompilerService.flavorOf("Apple clang version 21.0.0 (clang-2100.3.34.2)") == CompilerService.Flavor.CLANG,
+            String.valueOf(CompilerService.flavorOf("Apple clang version 21.0.0 (clang-2100.3.34.2)")));
+        check("brew 的 g++-16 认成 GCC",
+            CompilerService.flavorOf("g++-16 (Homebrew GCC 16.2.0) 16.2.0") == CompilerService.Flavor.GCC,
+            String.valueOf(CompilerService.flavorOf("g++-16 (Homebrew GCC 16.2.0) 16.2.0")));
+        check("Linux 的 g++ 认成 GCC",
+            CompilerService.flavorOf("g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0") == CompilerService.Flavor.GCC, "");
+        check("MinGW 那行也认成 GCC",
+            CompilerService.flavorOf("x86_64-w64-mingw32-g++ (GCC) 12.2.0") == CompilerService.Flavor.GCC, "");
+        check("Linux 上的 clang 认成 clang（clang 优先，不被别的东西抢走）",
+            CompilerService.flavorOf("clang version 18.1.0") == CompilerService.Flavor.CLANG, "");
+        check("--version 没跑通是 UNKNOWN，不假装知道",
+            CompilerService.flavorOf(null) == CompilerService.Flavor.UNKNOWN
+                && CompilerService.flavorOf("   ") == CompilerService.Flavor.UNKNOWN, "");
+        check("认不出来的那行也是 UNKNOWN",
+            CompilerService.flavorOf("some other compiler 1.2.3") == CompilerService.Flavor.UNKNOWN, "");
+
+        check("提醒只在 mac 上：Linux 的 clang 不问",
+            !CompilerService.shouldRecommendGcc(false, CompilerService.Flavor.CLANG), "多事");
+        check("mac + clang → 提醒", CompilerService.shouldRecommendGcc(true, CompilerService.Flavor.CLANG), "");
+        check("mac + GCC → 不提醒", !CompilerService.shouldRecommendGcc(true, CompilerService.Flavor.GCC), "已经在用了还提");
+        check("mac + 探测失败也算「不是 GCC」→ 提醒（这条只是建议，不拦路）",
+            CompilerService.shouldRecommendGcc(true, CompilerService.Flavor.UNKNOWN), "");
+
+        String advice = CompilerService.gccAdvice(
+            new CompilerService.Compiler(new File("/usr/bin/clang++"), "Apple clang version 21.0.0 (clang-2100.3.34.2)"));
+        check("建议里有那条命令本身", advice.contains("brew install gcc"), advice);
+        check("建议里说清 brew 装完是带版本号的名字（没有裸 g++）",
+            advice.contains("g++-16") && advice.contains("不给裸 g++"), advice);
+        check("建议给两条用法（CMake 与插件设置）",
+            advice.contains("-DCMAKE_CXX_COMPILER=") && advice.contains("编译器"), advice);
+        check("建议里点明后果：clang 没有 bits、与评测机不同",
+            advice.contains("bits/stdc++.h") && advice.contains("评测机"), advice);
+        check("编译器都没找到时也不空转，照样给一句",
+            CompilerService.gccAdvice(null).contains("还没找到可用的编译器"), CompilerService.gccAdvice(null));
+    }
+
+    // ---- CLion 用的编译器：读 CMake 自己写的 CMakeCache.txt ----
+
+    static void clionCacheRule() {
+        // 这一组要建临时目录，按本文件的约定不往外抛：抛了也算一条 FAIL，别让它静默变成「没跑」
+        try {
+            clionCacheRuleBody();
+        } catch (Exception e) {
+            check("cache 那组断言跑完了（没抛异常）", false, String.valueOf(e));
+        }
+    }
+
+    static void clionCacheRuleBody() throws Exception {
+        String cache = ""
+            + "# This is the CMakeCache file.\n"
+            + "CMAKE_BUILD_TYPE:STRING=Debug\n"
+            + "//ADVANCED property for variable: CMAKE_CXX_COMPILER\n"
+            + "CMAKE_CXX_COMPILER-ADVANCED:INTERNAL=1\n"
+            + "CMAKE_CXX_COMPILER_FLAGS-ADVANCED:INTERNAL=1\n"
+            + "CMAKE_CXX_COMPILER:FILEPATH=/opt/homebrew/bin/g++-16\n"
+            + "CMAKE_CXX_COMPILER_ARG1=\n";
+        check("读出 CLion 选的那个编译器路径",
+            "/opt/homebrew/bin/g++-16".equals(ClionToolchain.compilerPath(cache)),
+            String.valueOf(ClionToolchain.compilerPath(cache)));
+        check("不被 -ADVANCED / _ARG1 那几行抢走（值会是 1 或空）",
+            !ClionToolchain.compilerPath(cache).equals("1"), ClionToolchain.compilerPath(cache));
+        check("配置失败那行不算数（-NOTFOUND）",
+            ClionToolchain.compilerPath("CMAKE_CXX_COMPILER:FILEPATH=CMAKE_CXX_COMPILER-NOTFOUND") == null, "");
+        check("注释行不算数", ClionToolchain.compilerPath("//CMAKE_CXX_COMPILER=注释里的") == null, "");
+        check("没有这一行就是 null（没配置过 CMake）",
+            ClionToolchain.compilerPath("CMAKE_BUILD_TYPE:STRING=Debug\n") == null, "");
+        check("不带类型后缀的写法也认", "/usr/bin/clang++".equals(
+            ClionToolchain.compilerPath("CMAKE_CXX_COMPILER=/usr/bin/clang++")), "");
+        check("取第一条，不取后面重复的", "/a".equals(
+            ClionToolchain.compilerPath("CMAKE_CXX_COMPILER:FILEPATH=/a\nCMAKE_CXX_COMPILER:FILEPATH=/b")), "");
+
+        java.nio.file.Path root = Files.createTempDirectory("luogu-cache");
+        java.nio.file.Path old = Files.createDirectories(root.resolve("cmake-build-debug"));
+        java.nio.file.Files.write(old.resolve("CMakeCache.txt"), "CMAKE_CXX_COMPILER:FILEPATH=/old\n".getBytes());
+        java.nio.file.Path fresh = Files.createDirectories(root.resolve("cmake-build-asan"));
+        java.nio.file.Files.write(fresh.resolve("CMakeCache.txt"), "CMAKE_CXX_COMPILER:FILEPATH=/fresh\n".getBytes());
+        // 两个 profile 都在时，问的是「最后一次配置的」那个
+        fresh.resolve("CMakeCache.txt").toFile().setLastModified(System.currentTimeMillis() + 60_000);
+        old.resolve("CMakeCache.txt").toFile().setLastModified(System.currentTimeMillis() - 60_000);
+        check("多 profile 取最近修改的那份",
+            fresh.resolve("CMakeCache.txt").toFile().equals(ClionToolchain.cacheFile(root.toFile())),
+            String.valueOf(ClionToolchain.cacheFile(root.toFile())));
+        check("给子目录就只在这个目录里找（不往上爬到项目根）",
+            fresh.resolve("CMakeCache.txt").toFile().equals(ClionToolchain.cacheFile(fresh.toFile())),
+            String.valueOf(ClionToolchain.cacheFile(fresh.toFile())));
+        java.nio.file.Path emptyDir = Files.createDirectories(root.resolve("src"));
+        check("目录里没有 cache 就是 null（于是界面上说「PATH 上找的」）",
+            ClionToolchain.cacheFile(emptyDir.toFile()) == null,
+            String.valueOf(ClionToolchain.cacheFile(emptyDir.toFile())));
+        check("null / 不存在的目录都不炸",
+            ClionToolchain.cacheFile(null) == null && ClionToolchain.cacheFile(new File("/definitely/not/here")) == null, "");
+        check("cache 里的编译器不在磁盘上时退回 null（由调用方回落 PATH）",
+            ClionToolchain.compiler(old.toFile()) == null, "");
+    }
+
+    // ---- 拉题的头文件按编译器给 ----
+
+    static void codeTemplateRule() {
+        String clangMac = LuoguSettings.defaultCodeTemplate(true, CompilerService.Flavor.CLANG);
+        String gccMac = LuoguSettings.defaultCodeTemplate(true, CompilerService.Flavor.GCC);
+        String unknownMac = LuoguSettings.defaultCodeTemplate(true, CompilerService.Flavor.UNKNOWN);
+        String linuxClang = LuoguSettings.defaultCodeTemplate(false, CompilerService.Flavor.CLANG);
+        String linuxGcc = LuoguSettings.defaultCodeTemplate(false, CompilerService.Flavor.GCC);
+
+        check("mac + clang++ 保持真实标准头",
+            clangMac.contains("#include <iostream>") && !clangMac.contains("bits/stdc++.h"), clangMac);
+        check("mac + GCC 用 bits（评测机同款）", gccMac.startsWith("#include <bits/stdc++.h>"), gccMac);
+        check("mac + 还不知道 → 退回标准头：两个方向错的成本不一样",
+            unknownMac.equals(LuoguSettings.DEFAULT_CODE_TEMPLATE), unknownMac);
+        check("非 mac（他说的「不是 mac 就 bits」）→ bits",
+            linuxClang.contains("bits/stdc++.h") && linuxGcc.contains("bits/stdc++.h"), linuxClang);
+        check("三份模板都要有 main 与快速 IO",
+            clangMac.contains("int main()") && gccMac.contains("ios::sync_with_stdio(false)")
+                && gccMac.contains("cin.tie(nullptr)"), "");
+        check("bits 那份只有一行 include（别把标准头也塞进去，那是两套风格混着写）",
+            gccMac.split("#include").length - 1 == 1, gccMac);
+    }
+
+    // ---- 持久化字段必须 round-trip（1.8.1 的 wideScreenAdopted 就漏在 loadState）----
+
+    static void settingsRoundTrip() {
+        LuoguSettings a = new LuoguSettings();
+        a.setWideScreenLayoutAdopted(true);
+        a.setGccAdviceShownFor("/opt/homebrew/bin/g++-16");
+        a.setCompareCompilerPath("/usr/bin/clang++");
+        a.setCompareCompilerArgs("-std=c++20 -O2");
+        a.setCodeTemplate("#include <bits/stdc++.h>\nint main(){}");
+
+        LuoguSettings b = new LuoguSettings();
+        b.loadState(a);
+        check("宽屏「我们动过一次」读回来了", b.getWideScreenLayoutAdopted(), "重启后又打开一次，跟他抢方向盘");
+        check("装 GCC 的提醒记的是哪个编译器", "/opt/homebrew/bin/g++-16".equals(b.getGccAdviceShownFor()),
+            String.valueOf(b.getGccAdviceShownFor()));
+        check("编译器路径读回来", "/usr/bin/clang++".equals(b.getCompareCompilerPath()), "");
+        check("编译参数读回来", b.getCompareCompilerArgs().startsWith("-std=c++20"), "");
+        check("自定义模板读回来", b.getCodeTemplate().contains("int main(){}"), b.getCodeTemplate());
+        check("getState 返回自己（平台按这个写 XML）", a.getState() == a, "");
+
+        // 内容等于内置默认时不该算「自定义」，否则将来换编译器就不换头文件了
+        LuoguSettings c = new LuoguSettings();
+        c.setCodeTemplate(LuoguSettings.DEFAULT_CODE_TEMPLATE);
+        check("把内置默认原样存回去 = 没自定义", !c.getHasCustomCodeTemplate(), "被锁死成标准头");
+        c.setCodeTemplate(LuoguSettings.BITS_CODE_TEMPLATE);
+        check("bits 那份内置默认同样不算自定义", !c.getHasCustomCodeTemplate(), "被锁死成 bits");
+        c.setCodeTemplate("#include <iostream>\nint main(){ return 1; }");
+        check("真改过内容才算自定义", c.getHasCustomCodeTemplate(), "");
+    }
+
+    // ---- 「编译器」那一行：出处 + 建议都在一行里说清 ----
+
+    static void compilerLineRule() {
+        CompilerService.Compiler clang = new CompilerService.Compiler(
+            new File("/usr/bin/clang++"), "Apple clang version 21.0.0 (clang-2100.3.34.2)");
+        String advice = CompilerService.gccAdvice(clang);
+
+        check("写明用的是 CLion 选的那个",
+            CompilerLine.text(clang, CompilerService.Origin.CLION, null).contains("· CLion 选的"),
+            CompilerLine.text(clang, CompilerService.Origin.CLION, null));
+        check("PATH 兜底也要说出处",
+            CompilerLine.text(clang, CompilerService.Origin.PATH, null).contains("PATH 上找的"), "");
+        check("设置里填的优先，字样照实写",
+            CompilerLine.text(clang, CompilerService.Origin.SETTINGS, null).contains("设置里填的"), "");
+        check("该提醒时后缀一句「建议装 GCC」（只 7 个字，不许挤掉编译器名）",
+            CompilerLine.text(clang, CompilerService.Origin.CLION, advice).endsWith("· 建议装 GCC"),
+            CompilerLine.text(clang, CompilerService.Origin.CLION, advice));
+        check("名字与出处都还在（后缀不许吃掉前面）",
+            CompilerLine.text(clang, CompilerService.Origin.CLION, advice).startsWith("编译器：clang++（Apple clang"),
+            CompilerLine.text(clang, CompilerService.Origin.CLION, advice));
+        check("没有源文件那行不拼出「· 」尾巴", "编译器：未找到".equals(
+            CompilerLine.text(null, CompilerService.Origin.NONE, advice)), CompilerLine.text(null, CompilerService.Origin.NONE, advice));
+
+        String tip = CompilerLine.tooltip(clang, CompilerService.Origin.PATH, advice);
+        check("tooltip 有绝对路径与版本首行",
+            tip.contains("/usr/bin/clang++") && tip.contains("Apple clang"), tip);
+        check("tooltip 解释为什么没用 CLion 的（没 CMakeCache 是最常见情况）",
+            tip.contains("CMakeCache"), tip);
+        check("tooltip 带完整建议", tip.contains("brew install gcc"), "");
+        check("CLion 那条命中时 tooltip 说清来源",
+            CompilerLine.tooltip(clang, CompilerService.Origin.CLION, null).contains("CLion 项目实际在用"), "");
+        check("没建议时也照样解释出处（tooltip 不许只有一行路径）",
+            CompilerLine.tooltip(clang, CompilerService.Origin.SETTINGS, null).contains("插件设置里填的那个"),
+            CompilerLine.tooltip(clang, CompilerService.Origin.SETTINGS, null));
+        check("没建议时不出现 brew 那句",
+            !CompilerLine.tooltip(clang, CompilerService.Origin.SETTINGS, null).contains("brew install"), "");
+
+        check("回落说明优先于建议（那是「这次跑的跟他以为的不一样」）",
+            CompilerLine.warnText("设置里的编译器不可用", advice).startsWith("设置里的编译器不可用"), "");
+        check("只有建议时给短那句（全文在 tooltip）",
+            CompilerLine.warnText(null, advice).contains("bits/stdc++.h") && CompilerLine.warnText(null, advice).length() < 90,
+            CompilerLine.warnText(null, advice));
+        check("两样都没有 = 清空", CompilerLine.warnText(null, null) == null, "");
+    }
+
+    // ---- 题面/题解正文的 HTML：两边（JCEF 与 JEditorPane 兜底）都要读得开、复制不粘连 ----
+
+    /** 数一段文本里某个子串出现几次（比逐个 indexOf 手点清楚）。 */
+    static int count(String text, String needle) {
+        int n = 0, i = 0;
+        while ((i = text.indexOf(needle, i)) >= 0) { n++; i += needle.length(); }
+        return n;
+    }
+
+    static kotlin.Pair<String, String> kv(String k, String v) {
+        return new kotlin.Pair<>(k, v);
+    }
+
+    static void previewHtmlRule() {
+        String chips = PreviewPanel.metaChipsHtml(Arrays.asList(
+            kv("难度", "普及-"), kv("时间限制", "1000 ms"), kv("内存限制", "131072 KB"), kv("分数", "100")));
+        check("一枚一个 <p>（JEditorPane 丢了 display 也只占一行一枚）", count(chips, "<p class='chip'>") == 4, chips);
+        check("旧的 <span class=\"chip\"> 形状不再回来（那种兜底会粘成一句）", !chips.contains("span"), chips);
+        check("键与值的分隔符写在标记里：复制出来是「难度：普及-」",
+            chips.contains("<b>难度</b>：普及-"), chips);
+        check("值缺省也要有内容，不留空徽章", PreviewPanel.metaChipsHtml(Collections.singletonList(kv("时间限制", "暂无"))).contains("：暂无"),
+            PreviewPanel.metaChipsHtml(Collections.singletonList(kv("时间限制", "暂无"))));
+
+        List<kotlin.Pair<String, String>> blocks = Arrays.asList(
+            kv("题目背景", "本题只给[受信任的用户](https://help.luogu.com.cn/kb)看。"),
+            kv("题目描述", "求 $a_1$ 的值。\n- 第一项\n- 第二项"));
+        kotlin.jvm.functions.Function1<String, String> literal = PreviewPanel::jsonLiteral;
+        String jcef = PreviewPanel.bodyBlocksHtml(blocks, true, literal);
+        String fallback = PreviewPanel.bodyBlocksHtml(blocks, false, literal);
+
+        check("每段一个标题，顺序与题面一致",
+            jcef.indexOf("<h2>题目背景</h2>") >= 0 && jcef.indexOf("<h2>题目背景</h2>") < jcef.indexOf("<h2>题目描述</h2>"), jcef);
+        check("每段一个 marked 宿主", count(jcef, "data-luogu-md=") == 2, jcef);
+        check("宿主 id 与 JSON 载荷 id 成对（脚本按 id 找正文）",
+            jcef.contains("<div class='md' data-luogu-md='luogu-md-0'>")
+                && jcef.contains("<script id='luogu-md-0' type='application/json'>")
+                && jcef.contains("<script id='luogu-md-1' type='application/json'>"), jcef);
+        check("宿主里先摆着原文：marked 万一没跑，读到的还是题面而不是空白",
+            jcef.contains("本题只给[受信任的用户]") && jcef.contains("- 第一项"), jcef);
+        check("载荷是 JSON 字面量而不是裸文本", jcef.contains("\"本题只给"), jcef);
+
+        check("兜底路径一个脚本都不嵌（JEditorPane 会把 JSON 当正文打印出来）",
+            !fallback.contains("<script") && !fallback.contains("application/json"), fallback);
+        check("兜底路径正文照样看得见（原文 + 小标题）",
+            fallback.contains("求 $a_1$ 的值。") && fallback.contains("<h2>题目描述</h2>"), fallback);
+        check("空分段就是空串，不留一对空标签", "".equals(PreviewPanel.bodyBlocksHtml(
+            Collections.<kotlin.Pair<String, String>>emptyList(), true, literal)),
+            PreviewPanel.bodyBlocksHtml(Collections.<kotlin.Pair<String, String>>emptyList(), true, literal));
+
+        // `</` 必须写成 `<\/`，否则正文里一个 </script> 就把后面的 MathJax/marked 整段带走
+        String escaped = PreviewPanel.jsonLiteral("结尾</script>还有");
+        check("JSON 载荷里的 </script> 被转义", !escaped.contains("</script>") && escaped.contains("<\\/script>"), escaped);
+        check("引号由 JSON 编码器处理", PreviewPanel.jsonLiteral("他说\"好\"").startsWith("\""), PreviewPanel.jsonLiteral("他说\"好\""));
     }
 
     // ---- 时空上限那两个字段：他动过就别覆盖，量不到也要能填 ----

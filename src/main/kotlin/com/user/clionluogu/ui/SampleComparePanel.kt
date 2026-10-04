@@ -275,10 +275,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         if (running || probing || project.isDisposed) return
         val pid = currentPid()
         if (!LuoguPidValidator.isValidPid(pid)) return
-        val signature = LocalRunSignature.of(
-            LocalRunSignature.sourceFile(project.basePath, pid),
-            LocalRunSignature.samplesDir(project.basePath, pid),
-        )
+        val signature = LocalRunSignature.ofProject(project.basePath, pid)
         if (signature != diskSignature || target == null) probe()
     }
 
@@ -352,9 +349,8 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             onResult = { result ->
                 probing = false
                 if (!project.isDisposed) {
-                    diskSignature = LocalRunSignature.of(
-                        LocalRunSignature.sourceFile(result.projectBasePath ?: project.basePath, pid),
-                        LocalRunSignature.samplesDir(result.projectBasePath ?: project.basePath, pid),
+                    diskSignature = LocalRunSignature.ofProject(
+                        result.projectBasePath ?: project.basePath, pid,
                     )
                     applyTarget(pid, result)
                 }
@@ -567,18 +563,19 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         val compiler = t.compiler
         if (compiler == null) {
             compilerLabel.foreground = UIUtil.getLabelForeground()
-            compilerLabel.toolTipText = null
-            compilerLabel.text = "编译器：未找到"
+            compilerLabel.toolTipText = CompilerLine.tooltip(null, t.origin, t.gccAdvice)
+            compilerLabel.text = CompilerLine.text(null, t.origin)
             StatusRow.warn(
                 warnLabel,
                 t.compilerNotice ?: "点「换编译器…」指定一个 clang++/g++",
             )
             return
         }
-        compilerLabel.text = "编译器：${compiler.display()}"
+        compilerLabel.text = CompilerLine.text(compiler, t.origin, t.gccAdvice)
         compilerLabel.foreground = UIUtil.getLabelForeground()
-        compilerLabel.toolTipText = "${compiler.file.absolutePath}\n${compiler.versionLine.orEmpty()}"
-        val notice = t.compilerNotice
+        compilerLabel.toolTipText = CompilerLine.tooltip(compiler, t.origin, t.gccAdvice)
+        // 「回落说明」优先于「建议装 GCC」：前者意味着这次跑的跟他以为的不一样
+        val notice = CompilerLine.warnText(t.compilerNotice, t.gccAdvice)
         if (notice == null) StatusRow.clear(warnLabel) else StatusRow.warn(warnLabel, notice)
     }
 
