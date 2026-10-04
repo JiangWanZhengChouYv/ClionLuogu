@@ -1308,3 +1308,37 @@ ls: /bin/true: No such file or directory      存在 /usr/bin/true
 只能他在 IDE 里确认的（发版后照旧）：左侧栏第一次要不要手动拖；底部窗口默认高度下三个页签是不是一进来就看得见内容；
 明暗两套主题的判定颜色；预览页新 CSS 与无 JCEF 兜底；真实 CE 的跳行；超内存那行与孤儿进程（递归杀只有真 IDE 能验）。
 
+## 42. 1.8.1：底部运行栏不许挤左侧栏（插件替他开 IDE 的宽屏布局）
+
+他那句「CLionLuoguRun 我希望不要挡到左侧的 CLionLuogu（就是只占右边代码编辑区）」我**整条漏了** ——
+上一轮只处理了「臃肿」和「专属 UI」两条，没做这条也没说我漏了。这条不是排版问题：
+JetBrains 的布局规则是**上下条横跨整宽、侧边条被夹在中间**，插件改不了自己那条带占多宽。
+
+平台自带反向开关：`UISettings.wideScreenSupport`（界面里
+`Settings → Appearance & Behavior → Appearance → Widescreen tool window layout`，
+也可以 ⌘+点击分割条临时切）。开了之后**侧边占满全高、上下条只占中间编辑区的宽度**，正好是他要的。
+证据链（都是在这版发行包里查的，不是凭印象）：
+`AppearanceConfigurableKt` 里那个复选框 `cdWidescreenToolWindowLayout` 绑的是 `getSettings()` 上的一个
+`KMutableProperty0`，`UISettings` 上对应的就是 `getWideScreenSupport()/setWideScreenSupport(boolean)` +
+`fireUISettingsChanged()`。
+（`getInstanceOrNull()` 在 javap 里有、Kotlin 侧解析不到，所以用 `getInstance()` 包一层 `runCatching`。）
+
+他选的是「插件帮你把这个开关打开」，所以我做了 —— 但**写用户的 IDE 全局偏好必须有自律**，三条：
+
+1. **只在「现在是窄屏布局」且「我们从来没动过」时改**：判据抽成纯函数
+   `WideLayout.shouldApply(currentlyWidescreen, alreadyAdopted)`，四条真值全进探针
+   （其中一条就是「他后来自己关了，我们绝不再打开」——不跟用户抢方向盘）；
+2. 动过一次就把 `LuoguSettings.wideScreenLayoutAdopted` 记下来，**永不再动**；
+3. 通知里给一条 **「撤销（关掉宽屏布局）」**，一键回到原样，正文写清楚这个开关在 IDE 哪儿。
+
+时机选在**底部运行窗口的内容第一次被创建**时（`LuoguRunToolWindowFactory`），
+而不是启动活动 —— 没用到这个窗口就不该碰他的布局。
+
+另外这一版是被权限层拦下来过一次：改全局 IDE 偏好这种动作，即使计划里选了，
+也要**当轮明确确认**再落地。我停下来问了一句，他回「好的」之后才写。
+
+探针：**146（纯逻辑，含 `shouldApply` 四条真值）+ 34（真子进程）+ 55（元数据）** 全绿，布局四档 0 裁切。
+
+只能他验的：更新到 1.8.1 后，第一次打开底部运行栏应当弹一条通知、左侧栏立刻不再被夹短；
+点「撤销」应当恢复原布局且**之后启动不再弹**。
+

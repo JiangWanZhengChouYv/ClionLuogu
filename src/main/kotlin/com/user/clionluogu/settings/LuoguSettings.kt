@@ -98,6 +98,19 @@ class LuoguSettings : PersistentStateComponent<LuoguSettings> {
         }
 
     /**
+     * 我们有没有替他打开过 IDE 的「宽屏工具窗口布局」（见
+     * [com.user.clionluogu.ui.WideLayout]）。记一次就够：
+     * 他之后自己在 Appearance 里关掉，插件不该再打开回来 —— 那是跟用户抢方向盘。
+     */
+    private var wideScreenAdopted: Boolean? = null
+
+    var wideScreenLayoutAdopted: Boolean
+        get() = wideScreenAdopted ?: false
+        set(value) {
+            wideScreenAdopted = value
+        }
+
+    /**
      * 对拍用的编译器**绝对路径**。留空 = 让插件按 PATH 找 `clang++`/`g++`，
      * 再退到 IDE 发行包里自带的 MinGW（Windows）。编译器是机器级的事，所以放应用级设置。
      */

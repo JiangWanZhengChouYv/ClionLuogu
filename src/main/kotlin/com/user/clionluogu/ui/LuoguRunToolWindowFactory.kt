@@ -31,6 +31,10 @@ class LuoguRunToolWindowFactory : ToolWindowFactory {
             contentManager.addContent(content)
         }
 
+        // 底部那条默认横跨整宽，会把左侧的洛谷栏夹短。用户要的是「只占右边编辑区」——
+        // 这件事只有 IDE 的宽屏工具窗口布局能做，所以替他打开一次（只一次，通知里能一键撤销）。
+        if (WideLayout.applyOnce()) WideLayout.notifyApplied(project)
+
         add(SelfTestPanel(project), LuoguTabs.TAB_SELFTEST, AllIcons.Actions.Execute)
         add(SampleComparePanel(project), LuoguTabs.TAB_COMPARE, AllIcons.Actions.RunAll)
         add(

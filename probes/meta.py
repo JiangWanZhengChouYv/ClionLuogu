@@ -37,7 +37,7 @@ def newest_zip():
 props = read("gradle.properties")
 version = re.search(r"^version\s*=\s*(\S+)", props, re.M).group(1)
 check("gradle.properties 有版本号", bool(version), version)
-check("版本是 1.8.0", version == "1.8.0", version)
+check("版本是 1.8.1", version == "1.8.1", version)
 
 xml = read("src/main/resources/META-INF/plugin.xml")
 notes = re.search(r"<change-notes><!\[CDATA\[(.*?)\]\]></change-notes>", xml, re.S)
@@ -46,7 +46,8 @@ notes_text = notes.group(1) if notes else ""
 
 # release.sh 的同款切法：第一条 <li>，非贪婪
 first = re.search(r"<li>(.*?)</li>", notes_text, re.S).group(1)
-check("最新一条是 1.8.0", "<b>1.8.0</b>" in first, first[:80])
+check("最新一条是 1.8.1", "<b>1.8.1</b>" in first, first[:80])
+check("1.8.0 那条还在", "<b>1.8.0</b>" in notes_text)
 check("本版说明非空且够长", len(first.strip()) > 120, len(first))
 check("条目里不嵌 <li>（否则 release.sh 会截断）", "<li>" not in first, first[:80])
 check("1.7.4 那条还在（历史不覆盖）", "<b>1.7.4</b>" in notes_text)
@@ -123,6 +124,12 @@ check("底部三页各有图标", runf.count("AllIcons.Actions.") >= 3, str(runf
 
 report = read("Report.md")
 check("Report 有 1.8.0 一节", "## 37" in report and "1.8.0" in report)
+check("Report 有 1.8.1 一节", "## 42" in report and "1.8.1" in report)
+wide = read("src/main/kotlin/com/user/clionluogu/ui/WideLayout.kt")
+check("宽屏布局只打开一次（有「动过」标记才不再动）", "wideScreenLayoutAdopted" in wide, "")
+check("通知里有撤销", "撤销" in wide and "revert()" in wide, "")
+check("运行窗口创建时才应用", "WideLayout.applyOnce()" in read(
+    "src/main/kotlin/com/user/clionluogu/ui/LuoguRunToolWindowFactory.kt"), "")
 check("Report 有第二轮排版一节", "## 39" in report)
 
 print(f"=== 元数据探针：{PASS} 通过 / {len(FAIL)} 失败 ===")

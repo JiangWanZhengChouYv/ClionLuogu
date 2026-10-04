@@ -13,6 +13,7 @@ import com.user.clionluogu.service.SelfTestService;
 import com.user.clionluogu.ui.BlockText;
 import com.user.clionluogu.ui.CodeOrigin;
 import com.user.clionluogu.ui.DetailPanel;
+import com.user.clionluogu.ui.WideLayout;
 import com.user.clionluogu.ui.LimitFields;
 import com.user.clionluogu.ui.DetailSection;
 import com.user.clionluogu.ui.SampleComparePanel;
@@ -109,6 +110,7 @@ public class CoreProbe {
         meterParsing();
         statusRowRule();
         limitFieldsRule();
+        wideLayoutRule();
 
         System.out.println("=== 探针合计：" + pass + " 通过 / " + fail + " 失败 ===");
         Runtime.getRuntime().halt(fail == 0 ? 0 : 1);
@@ -506,6 +508,15 @@ public class CoreProbe {
         check("量不到就不写「峰值内存」那一行", SelfTestService.peakMemoryText(noPeak) == null, "写了");
         check("量到了就写 MB", SelfTestService.peakMemoryText(withPeak).equals("200 MB"),
             String.valueOf(SelfTestService.peakMemoryText(withPeak)));
+    }
+
+    // ---- 替他打开宽屏布局的判据：只在「现在是窄屏」且「我们没动过」时动一次 ----
+
+    static void wideLayoutRule() {
+        check("窄屏 + 没动过 → 打开", WideLayout.shouldApply(false, false), "没打开");
+        check("已经是宽屏 → 不碰", !WideLayout.shouldApply(true, false), "多此一举");
+        check("我们动过、他后来关了 → 绝不再打开", !WideLayout.shouldApply(false, true), "跟他抢方向盘");
+        check("动过且现在是宽屏 → 也不重复设置", !WideLayout.shouldApply(true, true), "重复写");
     }
 
     // ---- 时空上限那两个字段：他动过就别覆盖，量不到也要能填 ----
