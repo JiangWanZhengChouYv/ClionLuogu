@@ -182,20 +182,10 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         inputArea.addFocusListener(object : FocusAdapter() {
             override fun focusLost(e: FocusEvent) = persistInput()
         })
-        timeField.addActionListener { limitsTouched = true }
-        memoryField.addActionListener { limitsTouched = true }
-        memoryField.addFocusListener(object : FocusAdapter() {
-            override fun focusLost(e: FocusEvent) {
-                limitsTouched = true
-                syncLimitHints()
-            }
-        })
-        timeField.addFocusListener(object : FocusAdapter() {
-            override fun focusLost(e: FocusEvent) {
-                limitsTouched = true
-                syncLimitHints()
-            }
-        })
+        // **一敲字就算他改过**。原来只在失焦时标记：他在字段里打字的同时，编辑器那边存一次盘
+        // 就改了磁盘签名 → 每秒那次自动重探回来用题面值覆盖他的输入，看起来就是「改了没用」。
+        LimitFields.markWhenTyped(timeField) { limitsTouched = true }
+        LimitFields.markWhenTyped(memoryField) { limitsTouched = true }
         runButton.addActionListener { startRun() }
     }
 
@@ -239,11 +229,12 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         }
     }
 
-    /** 换题号：先把当前输入按**旧**题号存回去，再载入新题号那份。 */
+    /** 换题号：先把当前输入按**旧**题号存回去，再载入新题号那份。题号没变就什么都不做。 */
     private fun applyPid(newPid: String) {
         if (!LuoguPidValidator.isValidPid(newPid)) return
         val previous = loadedPid
-        if (previous != null && previous != newPid) {
+        if (previous == newPid) return
+        if (previous != null) {
             SelfTestService.saveInput(project, previous, inputArea.text)
         }
         loadedPid = newPid
@@ -291,7 +282,7 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
             compilerLabel.text = "编译器：${compiler.display()}"
             compilerLabel.toolTipText = "${compiler.file.absolutePath}\n${compiler.versionLine.orEmpty()}"
         }
-        if (!limitsTouched) fillLimitsFromProblem(t)
+        if (LimitFields.shouldFillFromProblem(limitsTouched)) fillLimitsFromProblem(t)
         syncLimitHints()
         val block = blockingReason(pidField.text.trim(), t, project.basePath)
         runButton.isEnabled = block == null && !running
@@ -317,10 +308,10 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
             fromProblem?.timeMs?.let { append("；这道题题面写的是 $it ms") }
         }
         val meter = t?.meter
-        memoryField.isEnabled = meter != null
         memoryField.toolTipText = when {
-            meter == null -> "这台机器量不到子进程峰值内存（没有找到能解析的 time），所以不判 MLE。" +
-                fromProblem?.memoryMb?.let { "题面写的是 $it MB。" }.orEmpty()
+            meter == null -> "这台机器量不到子进程峰值内存（没找到能解析峰值的 time）。" +
+                "这里照样可以填（默认取题面），但它只作显示、不参与判定。" +
+                (fromProblem?.memoryMb?.let { "题面写的是 $it MB。" } ?: "")
             else -> buildString {
                 append("本地峰值内存上限（兆）。留空 = 不比内存")
                 fromProblem?.memoryMb?.let { append("；这道题题面写的是 $it MB") }
@@ -591,6 +582,10 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
             run?.let {
                 overview.add("结果" to SelfTestService.summaryText(it, SelfTestService.DEFAULT_TIMEOUT_MS, memoryLimitMb))
                 overview.add("用时" to "${it.elapsedMs} ms")
+                // 设了内存上限却量不到峰值：必须写出来，不能让他以为这一栏生效了
+                if (memoryLimitMb != null && it.peakMemoryBytes == null) {
+                    overview.add("内存上限" to LimitFields.unenforcedText(memoryLimitMb))
+                }
                 SelfTestService.peakMemoryText(it)?.let { peak -> overview.add("峰值内存" to peak) }
                 overview.add("退出码" to (it.exitCode?.toString() ?: "无（进程被终止）"))
             }

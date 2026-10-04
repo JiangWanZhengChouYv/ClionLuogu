@@ -114,6 +114,11 @@ for panel in ["FetchPanel.kt", "SearchPanel.kt", "LoginPanel.kt", "SubmitPanel.k
     body = read("src/main/kotlin/com/user/clionluogu/ui/" + panel)
     check(f"{panel} 用共用的状态行规则", "StatusRow." in body, "")
 runf = read("src/main/kotlin/com/user/clionluogu/ui/LuoguRunToolWindowFactory.kt")
+check("对拍页不留已经没人调用的 limitsRow（重排后的死代码）", "limitsRow" not in compare, "")
+check("两个面板都不许再用「禁用内存字段」代替说明",
+      "memoryField.isEnabled" not in compare and
+      "memoryField.isEnabled" not in read("src/main/kotlin/com/user/clionluogu/ui/SelfTestPanel.kt"), "")
+check("上限字段一敲字就算改过", "LimitFields.markWhenTyped(timeField)" in compare, "")
 check("底部三页各有图标", runf.count("AllIcons.Actions.") >= 3, str(runf.count("AllIcons.Actions.")))
 
 report = read("Report.md")

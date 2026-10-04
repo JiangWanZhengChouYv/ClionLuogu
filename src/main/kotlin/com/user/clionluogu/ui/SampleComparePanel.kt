@@ -137,6 +137,14 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
 
     init {
         pidField.emptyText.appendText("空 = 跟当前文件")
+        timeField.columns = 5
+        timeField.emptyText.appendText("ms")
+        memoryField.columns = 5
+        memoryField.emptyText.appendText("MB")
+        // 一敲字就算改过：只标失焦的话，中途那次「磁盘签名变了 → 自动重探」会把题面值盖回来，
+        // 看起来就是「时限改了没用」（他就是这么报的）
+        LimitFields.markWhenTyped(timeField) { limitsTouched = true }
+        LimitFields.markWhenTyped(memoryField) { limitsTouched = true }
         // 底部窗口矮，头部绝不能一行一件：题号、时空上限、编译器、两个按钮全排一行。
         // 用 WrapLayout 而不是 FlowLayout —— 后者算 preferredSize 只算单行高度，
         // 窗口被拖窄时折出去的第二行会被整块裁掉（1.7.1/1.7.2 真踩过两次）。
@@ -271,28 +279,6 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         if (signature != diskSignature || target == null) probe()
     }
 
-    /** 时空上限那一行：默认取题面（[applyTarget] 里填），动过就听他的。 */
-    private fun limitsRow(): JComponent {
-        timeField.columns = 5
-        timeField.emptyText.appendText("ms")
-        memoryField.columns = 5
-        memoryField.emptyText.appendText("MB")
-        val touch = object : FocusAdapter() {
-            override fun focusLost(e: FocusEvent) {
-                limitsTouched = true
-                target?.let { syncLimitHints(it) }
-            }
-        }
-        timeField.addFocusListener(touch)
-        memoryField.addFocusListener(touch)
-        val row = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
-        row.add(JBLabel("时限"))
-        row.add(timeField)
-        row.add(JBLabel("内存"))
-        row.add(memoryField)
-        return row
-    }
-
     /** 把「这道题的限制」和「这台机器量不量得到内存」都写在字段自己的提示上。 */
     private fun syncLimitHints(t: CompareTarget) {
         val problemTime = t.problemLimits.timeMs
@@ -300,9 +286,9 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             "${SampleCompareService.DEFAULT_TIMEOUT_MS} ms" +
             (problemTime?.let { "；这道题题面写的是 $it ms" }.orEmpty())
         val problemMemory = t.problemLimits.memoryMb
-        memoryField.isEnabled = t.meter != null
         memoryField.toolTipText = if (t.meter == null) {
-            "这台机器量不到子进程峰值内存（没找到能解析的 time），所以不判 MLE。" +
+            "这台机器量不到子进程峰值内存（没找到能解析峰值的 time）。" +
+                "这里照样可以填（默认取题面），但它只作显示、不参与判定。" +
                 (problemMemory?.let { "题面写的是 $it MB。" }.orEmpty())
         } else {
             "本地峰值内存上限（兆），超了判「超内存」。留空 = 不比内存" +
@@ -375,7 +361,7 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         target = t
         targetPid = pid
         updateCompilerLabel(t)
-        if (!limitsTouched) {
+        if (LimitFields.shouldFillFromProblem(limitsTouched)) {
             timeField.text = t.problemLimits.timeMs?.toString().orEmpty()
             memoryField.text = t.problemLimits.memoryMb?.toString().orEmpty()
         }

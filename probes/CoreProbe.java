@@ -13,6 +13,7 @@ import com.user.clionluogu.service.SelfTestService;
 import com.user.clionluogu.ui.BlockText;
 import com.user.clionluogu.ui.CodeOrigin;
 import com.user.clionluogu.ui.DetailPanel;
+import com.user.clionluogu.ui.LimitFields;
 import com.user.clionluogu.ui.DetailSection;
 import com.user.clionluogu.ui.SampleComparePanel;
 import com.user.clionluogu.ui.SelfTestPanel;
@@ -107,6 +108,7 @@ public class CoreProbe {
         signatureStability();
         meterParsing();
         statusRowRule();
+        limitFieldsRule();
 
         System.out.println("=== 探针合计：" + pass + " 通过 / " + fail + " 失败 ===");
         Runtime.getRuntime().halt(fail == 0 ? 0 : 1);
@@ -504,6 +506,44 @@ public class CoreProbe {
         check("量不到就不写「峰值内存」那一行", SelfTestService.peakMemoryText(noPeak) == null, "写了");
         check("量到了就写 MB", SelfTestService.peakMemoryText(withPeak).equals("200 MB"),
             String.valueOf(SelfTestService.peakMemoryText(withPeak)));
+    }
+
+    // ---- 时空上限那两个字段：他动过就别覆盖，量不到也要能填 ----
+
+    static void limitFieldsRule() {
+        check("他没动过 → 用题面值填字段", LimitFields.shouldFillFromProblem(false), "没填");
+        check("他动过 → 不许再用题面值盖", !LimitFields.shouldFillFromProblem(true), "盖掉了");
+        final boolean[] touched = {false};
+        javax.swing.JTextField field = new javax.swing.JTextField();
+        LimitFields.markWhenTyped(field, new kotlin.jvm.functions.Function0<kotlin.Unit>() {
+            @Override public kotlin.Unit invoke() {
+                touched[0] = true;
+                return kotlin.Unit.INSTANCE;
+            }
+        });
+        check("刚挂上监听还不算改过", !touched[0], "一挂上就算改过");
+        field.setText("2000");
+        check("一敲字就算改过（不用等失焦）", touched[0], "要到失焦才算");
+        check("量不到时那句人话带数字与原因",
+            LimitFields.unenforcedText(128).contains("128 MB") && LimitFields.unenforcedText(128).contains("不生效"),
+            LimitFields.unenforcedText(128));
+
+        // 设了内存上限却量不到峰值 → 概览必须写出来，不能让他以为这一栏生效了
+        ProcessRunner.Outcome noPeak = run("x", "", 0, 5L, false, false, false, null);
+        List<DetailSection> shown = SelfTestPanel.sections(
+            new SelfTestService.Report("P1001", "/tmp/e", new CompilerService.Outcome(true, 0, "", 1L, "c", false, false),
+                noPeak, null), 128);
+        check("概览说明「上限设了但没生效」",
+            row(shown, "概览", "内存上限").contains("不生效"), row(shown, "概览", "内存上限"));
+        ProcessRunner.Outcome withPeak = new ProcessRunner.Outcome("x", "", 0, 5L, false, false, false, null,
+            64L * 1048576L, null);
+        List<DetailSection> measured = SelfTestPanel.sections(
+            new SelfTestService.Report("P1001", "/tmp/e", new CompilerService.Outcome(true, 0, "", 1L, "c", false, false),
+                withPeak, null), 128);
+        check("量到了就不写那句「不生效」", !row(measured, "概览", "内存上限").contains("不生效"),
+            row(measured, "概览", "内存上限"));
+        check("量到了写峰值内存那一行", row(measured, "概览", "峰值内存").equals("64 MB"),
+            row(measured, "概览", "峰值内存"));
     }
 
     // ---- 状态行那一处规则（原来五个面板各写一遍，早晚有一处不染色） ----

@@ -192,10 +192,11 @@ public class ProcessProbe {
         check("产物不存在时没有退出码", o9.getExitCode() == null, String.valueOf(o9.getExitCode()));
 
         // 10) 内存测量：包一层 time 要能解析出峰值，且报表不混进 stdout
+        // 这条不许 SKIP：上一版探测用 /bin/true（用户机器上没有），测量器整个没启用，
+        // 探针却把九条断言静默跳过、照样报绿 —— 假绿就是这么来的。
         ResourceMeter.Meter meter = ResourceMeter.INSTANCE.available();
-        if (meter == null) {
-            System.out.println("SKIP 这台机器量不到子进程峰值内存（那条路径界面上会明说）");
-        } else {
+        check("这台机器能探测到峰值内存测量器", meter != null, String.valueOf(meter));
+        if (meter != null) {
             File hog = compile(c, "hog.cpp",
                 "#include <cstdlib>\n#include <cstring>\n#include <iostream>\nint main(){int k=40;char*p=(char*)malloc((size_t)k*1048576);memset(p,1,(size_t)k*1048576);std::cout<<\"ok\\n\";return 0;}\n");
             ProcessRunner.Outcome o10 = ProcessRunner.run(

@@ -26,8 +26,14 @@ object ResourceMeter {
 
     private const val TOOL_PATH = "/usr/bin/time"
 
-    /** trivial 被测程序：只为验证「能不能解析出峰值」。 */
-    private const val PROBE_VICTIM = "/bin/true"
+    /**
+     * trivial 被测程序的候选：**挨个试到某个能跑通并解析出峰值**，而不是按操作系统名挑一个。
+     *
+     * 只写 `/bin/true` 在他那台 macOS 上根本不存在（`ls: /bin/true: No such file or directory`，
+     * 但 `/usr/bin/true` 在）——探测因此整体失败，界面表现成「内存字段改不了」。
+     * 这类「我以为到处都有的东西」必须列出来一个个验，别假设。
+     */
+    private val PROBE_VICTIMS = listOf("/usr/bin/true", "/bin/true", "/bin/pwd", "/bin/echo")
 
     private const val PROBE_TIMEOUT_MS = 5_000L
 
@@ -61,15 +67,18 @@ object ResourceMeter {
         if (!tool.isFile || !tool.canExecute()) return null
         // 先试 mac 那条（macOS 上 -v 是 BSD time 的「version」语义，会给一堆别的东西）
         for (flavor in listOf(Flavor.MAC_L, Flavor.GNU_V)) {
-            val output = runTool(tool, flag(flavor)) ?: continue
-            if (parsePeak(output, flavor) != null) return Meter(tool, flavor)
+            for (victim in PROBE_VICTIMS) {
+                if (!File(victim).isFile) continue
+                val output = runTool(tool, flag(flavor), victim) ?: continue
+                if (parsePeak(output, flavor) != null) return Meter(tool, flavor)
+            }
         }
         return null
     }
 
-    private fun runTool(tool: File, flag: String): String? {
+    private fun runTool(tool: File, flag: String, victim: String): String? {
         val process = runCatching {
-            ProcessBuilder(tool.absolutePath, flag, PROBE_VICTIM).redirectErrorStream(true).start()
+            ProcessBuilder(tool.absolutePath, flag, victim).redirectErrorStream(true).start()
         }.getOrNull() ?: return null
         val finished = runCatching { process.waitFor(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS) }.getOrDefault(false)
         if (!finished) {
