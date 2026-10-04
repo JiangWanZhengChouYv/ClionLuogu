@@ -94,6 +94,8 @@ class SubmitPanel(
         submitButton.addActionListener { doSubmit() }
         // 改完题号立刻重看，不用等下一个 tick
         pidField.addActionListener { refreshPreview(force = true) }
+        // 语言下拉与提交按钮**故意不响应回车**：提交是写操作，必须一下实点（他定的规矩）。
+        // 回车只用于「看一眼要交的是哪一份」这类读操作。
     }
 
     override fun addNotify() {

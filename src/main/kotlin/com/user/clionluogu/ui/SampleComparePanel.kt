@@ -145,6 +145,9 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         // 看起来就是「时限改了没用」（他就是这么报的）
         LimitFields.markWhenTyped(timeField) { limitsTouched = true }
         LimitFields.markWhenTyped(memoryField) { limitsTouched = true }
+        // 回车 = 认了这个数字，不必再点到别处
+        timeField.addActionListener { commitLimits() }
+        memoryField.addActionListener { commitLimits() }
         // 底部窗口矮，头部绝不能一行一件：题号、时空上限、编译器、两个按钮全排一行。
         // 用 WrapLayout 而不是 FlowLayout —— 后者算 preferredSize 只算单行高度，
         // 窗口被拖窄时折出去的第二行会被整块裁掉（1.7.1/1.7.2 真踩过两次）。
@@ -279,10 +282,24 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         if (signature != diskSignature || target == null) probe()
     }
 
+    /** 上限改完（回车或失焦）：认这个数字，并把新值反映到提示与状态行。 */
+    private fun commitLimits() {
+        limitsTouched = true
+        target?.let { syncLimitHints(it) }
+        val ms = ProblemLimits.parseTimeMs(timeField.text, SampleCompareService.DEFAULT_TIMEOUT_MS)
+        val mb = ProblemLimits.parseMemoryMb(memoryField.text)
+        statusLabel.text = "时限 $ms ms（不含编译）· " +
+            when {
+                target?.meter == null -> "内存量不到，那一栏只作显示"
+                mb == null -> "不比内存"
+                else -> "内存上限 $mb MB"
+            }
+    }
+
     /** 把「这道题的限制」和「这台机器量不量得到内存」都写在字段自己的提示上。 */
     private fun syncLimitHints(t: CompareTarget) {
         val problemTime = t.problemLimits.timeMs
-        timeField.toolTipText = "每组样例的时限（毫秒）。留空或写错 = 用插件默认 " +
+        timeField.toolTipText = "每组样例的时限（毫秒），从进程启动算、不含编译（编译另有 120 秒上限）。留空或写错 = 用插件默认 " +
             "${SampleCompareService.DEFAULT_TIMEOUT_MS} ms" +
             (problemTime?.let { "；这道题题面写的是 $it ms" }.orEmpty())
         val problemMemory = t.problemLimits.memoryMb

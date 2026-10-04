@@ -85,6 +85,9 @@ class LoginPanel(private val project: Project) : JPanel() {
         cardLayout.show(this, CARD_LOGIN)
 
         loginButton.addActionListener { doLogin() }
+        // 两栏是从浏览器 Cookie 里粘的：先粘 __client_id 回车 = 去 _uid，再回车才是登录
+        clientIdField.addActionListener { uidField.requestFocusInWindow() }
+        uidField.addActionListener { doLogin() }
         refreshButton.addActionListener { refresh() }
         logoutButton.addActionListener { doLogout() }
 

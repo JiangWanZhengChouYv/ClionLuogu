@@ -279,29 +279,50 @@ public class CoreProbe {
     // ---- 详情区该出现哪几节 ----
 
     static void sections() {
-        List<DetailSection> compileFailed = SelfTestPanel.sections(
+        List<DetailSection> compileFailed = SelfTestPanel.sideSections(
             new SelfTestService.Report("P1001", "/tmp/build/P1001", compile(false, "src:12:3: error: 少个分号"), null, null));
         check("编译失败有诊断节", section(compileFailed, "编译诊断") != null, String.valueOf(compileFailed));
+        check("编译失败时中间栏没有输出（还没跑到）", SelfTestPanel.outputSections(
+            new SelfTestService.Report("P1001", "/tmp/build/P1001", compile(false, "src:1:1: error: x"), null, null)
+        ).isEmpty(), "有内容");
         check("编译失败时诊断原文不裁",
             compileFailed.get(1).getBlock().contains("少个分号"), String.valueOf(compileFailed));
         check("编译失败不该出现 stdout 节", section(compileFailed, "stdout") == null, String.valueOf(compileFailed));
         check("概览要说编译失败", row(compileFailed, "概览", "编译").contains("失败"), row(compileFailed, "概览", "编译"));
 
-        List<DetailSection> ok = SelfTestPanel.sections(
+        List<DetailSection> ok = SelfTestPanel.sideSections(
             new SelfTestService.Report("P1001", "/tmp/build/P1001", compile(true, ""),
                 run("42\n", "warn: x", 0, 9L, false, false, false, null), null));
-        check("跑通了 stdout 是那块内容", section(ok, "stdout").getBlock().equals("42\n"), section(ok, "stdout").getBlock());
+        // 两栏分工：stdout 只出现在中间栏，右边那栏绝不重复一份
+        List<DetailSection> okRun = SelfTestPanel.sideSections(
+            new SelfTestService.Report("P1001", "/tmp/build/P1001", compile(true, ""),
+                run("42\n", "warn: x", 0, 9L, false, false, false, null), null), 128, 1000);
+        List<DetailSection> okOut = SelfTestPanel.outputSections(
+            new SelfTestService.Report("P1001", "/tmp/build/P1001", compile(true, ""),
+                run("42\n", "warn: x", 0, 9L, false, false, false, null), null));
+        check("中间栏只有 stdout 一块，内容就是程序输出", okOut.size() == 1 && "42\n".equals(okOut.get(0).getBlock()),
+            String.valueOf(okOut));
+        check("右边那栏不再放 stdout（不重复）", section(okRun, "stdout") == null, "又放了一遍");
+        // 键名本身就写着「不含编译」，值只有数字
+        check("概览那一行叫「时限（不含编译）」且值就是毫秒数",
+            !row(okRun, "概览", "时限（不含编译）").startsWith("<") && "1000 ms".equals(row(okRun, "概览", "时限（不含编译）")),
+            row(okRun, "概览", "时限（不含编译）"));
+        check("编译耗时与运行用时分开两行", row(okRun, "概览", "编译").contains("ms")
+            && row(okRun, "概览", "运行用时").contains("9 ms"), row(okRun, "概览", "运行用时"));
+        check("还没跑到时中间栏给一句说明而不是空白",
+            SelfTestPanel.pendingOutputSections().get(0).getBlock().contains("还没运行"), "空白");
         check("stderr 非空才出现这节", section(ok, "stderr") != null, "缺 stderr");
-        check("概览带用时", row(ok, "概览", "用时").equals("9 ms"), row(ok, "概览", "用时"));
+        check("概览带运行用时（键名与编译耗时分开）",
+            row(ok, "概览", "运行用时").equals("9 ms"), row(ok, "概览", "运行用时"));
         check("概览带退出码", row(ok, "概览", "退出码").equals("0"), row(ok, "概览", "退出码"));
         check("概览第一行是题目", ok.get(0).getRows().get(0).getFirst().equals("题目"), String.valueOf(ok.get(0)));
 
-        List<DetailSection> quiet = SelfTestPanel.sections(
+        List<DetailSection> quiet = SelfTestPanel.sideSections(
             new SelfTestService.Report("P1001", "/tmp/build/P1001", compile(true, ""),
                 run("1\n", "   ", 0, 1L, false, false, false, null), null));
         check("空白 stderr 不留一节空壳", section(quiet, "stderr") == null, String.valueOf(quiet));
 
-        List<DetailSection> startErr = SelfTestPanel.sections(
+        List<DetailSection> startErr = SelfTestPanel.sideSections(
             new SelfTestService.Report("P1001", "/tmp/build/P1001", null, null, "磁盘满了"));
         check("写不出临时文件也要写在概览里", row(startErr, "概览", "没能开始").equals("磁盘满了"), row(startErr, "概览", "没能开始"));
 
@@ -541,14 +562,14 @@ public class CoreProbe {
 
         // 设了内存上限却量不到峰值 → 概览必须写出来，不能让他以为这一栏生效了
         ProcessRunner.Outcome noPeak = run("x", "", 0, 5L, false, false, false, null);
-        List<DetailSection> shown = SelfTestPanel.sections(
+        List<DetailSection> shown = SelfTestPanel.sideSections(
             new SelfTestService.Report("P1001", "/tmp/e", new CompilerService.Outcome(true, 0, "", 1L, "c", false, false),
                 noPeak, null), 128);
         check("概览说明「上限设了但没生效」",
             row(shown, "概览", "内存上限").contains("不生效"), row(shown, "概览", "内存上限"));
         ProcessRunner.Outcome withPeak = new ProcessRunner.Outcome("x", "", 0, 5L, false, false, false, null,
             64L * 1048576L, null);
-        List<DetailSection> measured = SelfTestPanel.sections(
+        List<DetailSection> measured = SelfTestPanel.sideSections(
             new SelfTestService.Report("P1001", "/tmp/e", new CompilerService.Outcome(true, 0, "", 1L, "c", false, false),
                 withPeak, null), 128);
         check("量到了就不写那句「不生效」", !row(measured, "概览", "内存上限").contains("不生效"),

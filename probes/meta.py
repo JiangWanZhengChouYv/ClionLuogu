@@ -128,6 +128,16 @@ check("Report 有 1.8.1 一节", "## 42" in report and "1.8.1" in report)
 wide = read("src/main/kotlin/com/user/clionluogu/ui/WideLayout.kt")
 check("宽屏布局只打开一次（有「动过」标记才不再动）", "wideScreenLayoutAdopted" in wide, "")
 check("通知里有撤销", "撤销" in wide and "revert()" in wide, "")
+check("拉取/搜索/登录的上限与题号框都吃回车", all(".addActionListener" in read(f) for f in [
+    "src/main/kotlin/com/user/clionluogu/ui/FetchPanel.kt",
+    "src/main/kotlin/com/user/clionluogu/ui/SearchPanel.kt",
+    "src/main/kotlin/com/user/clionluogu/ui/LoginPanel.kt",
+    "src/main/kotlin/com/user/clionluogu/ui/SampleComparePanel.kt",
+    "src/main/kotlin/com/user/clionluogu/ui/SelfTestPanel.kt"]), "")
+check("提交页明确不给回车（写操作要实点）", "故意不响应回车" in submit, "")
+selftest = read("src/main/kotlin/com/user/clionluogu/ui/SelfTestPanel.kt")
+check("自测页是三栏（左输入 / 中 stdout / 右概览+stderr）",
+      "stdoutPanel" in selftest and "sidePanel" in selftest and "outputSections" in selftest, "")
 check("运行窗口创建时才应用", "WideLayout.applyOnce()" in read(
     "src/main/kotlin/com/user/clionluogu/ui/LuoguRunToolWindowFactory.kt"), "")
 check("Report 有第二轮排版一节", "## 39" in report)

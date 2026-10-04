@@ -47,6 +47,8 @@ class FetchPanel(
         add(JBScrollPane(resultArea), BorderLayout.CENTER)
 
         fetchButton.addActionListener { doFetch() }
+        // 回车就该干这件正事：题号是「抄来的」，敲完直接回车比挪鼠标点按钮快得多
+        pidField.addActionListener { doFetch() }
         solutionsButton.addActionListener { doShowSolutions() }
     }
 

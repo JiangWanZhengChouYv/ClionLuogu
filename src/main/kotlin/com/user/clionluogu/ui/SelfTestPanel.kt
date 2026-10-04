@@ -40,8 +40,9 @@ import javax.swing.Timer
  * 它存在的理由是对拍页那句「没有成对的 .in/.out」——那时候连跑一下看看输出都不行，
  * 而调 WA 的第一步恰恰是「我给个输入，看它到底打印什么」。这里**不比期望输出**，只看结果。
  *
- * 排版按「底部窗口宽而矮」来定：输入与输出**左右排**（被拖窄到 460 像素以下才换上下），
- * 头行只有一行，次级动作是链接不是按钮 —— 他说过底部太臃肿。
+ * 排版按「底部窗口宽而矮」来定：**左输入 | 中 stdout | 右概览+stderr+编译诊断**三栏
+ * （被拖窄到 460 像素以下时每层各自塌成上下排），头行只有一行，次级动作是链接不是按钮
+ * —— 他说过底部太臃肿，又说概览不该和输出挤在同一块里滚动。
  *
  * 三处取舍：
  * - **每次先重编**：不给「用上次产物」（那要靠 mtime 猜产物新旧）。
@@ -54,7 +55,11 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
     private val timeField = JBTextField()
     private val memoryField = JBTextField()
     private val inputArea = JBTextArea()
-    private val detail = DetailPanel()
+    /** 中间那一栏：只有 stdout（跑完就看它）。 */
+    private val stdoutPanel = DetailPanel()
+
+    /** 右边那一栏：概览（题目 / 时限 / 用时 / 退出码 / 峰值内存）+ stderr + 编译诊断。 */
+    private val sidePanel = DetailPanel()
     private val runButton = JButton("运行")
     private val stopLink = LinkLabel.create("停止") { stopRun() }
     private val jumpLink = LinkLabel.create(JUMP_LABEL) { jumpToError() }
@@ -149,16 +154,17 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         head.add(compilerLink, gbc)
 
         // 输入 | 输出：底部窗口宽，所以左右排（AutoFlipSplitter 在被拖窄时才换成上下）
-        val split = AutoFlipSplitter(0.42f).apply {
-            firstComponent = captioned("输入（stdin）", JBScrollPane(inputArea))
-            secondComponent = JBScrollPane(
-                detail,
-                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-                ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
-            )
-            border = JBUI.Borders.empty(2, 8)
+        // 三栏：左输入 | 中 stdout | 右概览+stderr+诊断。
+        // 每一层都用 AutoFlipSplitter：窗口被拖窄到 460 以下时该层自动改成上下排，
+        // 所以三栏在窄栏里会自然塌成堆叠，而不是互相挤到看不见。
+        val rightHalf = AutoFlipSplitter(0.5f).apply {
+            firstComponent = scroll(stdoutPanel)
+            secondComponent = scroll(sidePanel)
         }
-
+        val split = AutoFlipSplitter(0.3f).apply {
+            firstComponent = captioned("输入（stdin）", JBScrollPane(inputArea))
+            secondComponent = rightHalf
+        }
         val actions = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
         actions.border = JBUI.Borders.empty(2, 8, 4, 8)
         runButton.icon = AllIcons.Actions.Execute
@@ -186,6 +192,9 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         // 就改了磁盘签名 → 每秒那次自动重探回来用题面值覆盖他的输入，看起来就是「改了没用」。
         LimitFields.markWhenTyped(timeField) { limitsTouched = true }
         LimitFields.markWhenTyped(memoryField) { limitsTouched = true }
+        // 回车 = 认了这个数字（和点别处失焦等价），不用非得再去别处点一下
+        timeField.addActionListener { commitLimits() }
+        memoryField.addActionListener { commitLimits() }
         runButton.addActionListener { startRun() }
     }
 
@@ -302,7 +311,7 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         val t = target
         val fromProblem = t?.problemLimits
         timeField.toolTipText = buildString {
-            append("本地跑一组的时限（毫秒）。留空或写错 = 用插件默认 ")
+            append("本地跑一组的时限（毫秒），**从进程启动算，不含编译**（编译另有 120 秒上限）。留空或写错 = 用插件默认 ")
             append(SelfTestService.DEFAULT_TIMEOUT_MS)
             append(" ms")
             fromProblem?.timeMs?.let { append("；这道题题面写的是 $it ms") }
@@ -354,7 +363,8 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
         lastRunPid = pid
         pendingJump = null
         setStatus("编译中…")
-        detail.render(runningSections(savedName, CompilerService.executableName(pid), source.path, timeMs, memoryMb, t.meter))
+        sidePanel.render(runningSections(savedName, CompilerService.executableName(pid), source.path, timeMs, memoryMb, t.meter))
+        stdoutPanel.render(pendingOutputSections())
 
         task = SelfTestService.run(
             project = project,
@@ -400,7 +410,8 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
                 setStatus(summary, error = !summary.startsWith("正常结束"))
             }
         }
-        detail.render(sections(report, memoryMb))
+        stdoutPanel.render(outputSections(report))
+        sidePanel.render(sideSections(report, memoryMb, parseTimeMs(timeField.text)))
         updateJumpButton()
         // 探测可能刚变（他中途换了编译器），运行按钮要重新能点
         val target = t
@@ -480,6 +491,25 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
     private fun setStatus(text: String, error: Boolean = false) = StatusRow.apply(statusLabel, text, error)
 
     /** 半边一个细条说明，代替 TitledBorder（他说过底部臃肿：边框 + 标题行吃掉两行高）。 */
+    /** 详情区自己会横向滚（每块是独立的等宽块），外层只给竖向滚动条。 */
+    private fun scroll(component: JComponent): JBScrollPane = JBScrollPane(
+        component,
+        ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
+        ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER,
+    )
+
+    /** 上限改完（回车或失焦）：标成「他改过」并把新数字反映到提示与状态行上。 */
+    private fun commitLimits() {
+        limitsTouched = true
+        syncLimitHints()
+        val text = "时限 ${parseTimeMs(timeField.text)} ms（不含编译）" +
+            when {
+                target?.meter == null -> "；内存量不到，那一栏只作显示"
+                else -> "；内存上限 ${parseMemoryMb(memoryField.text)?.toString() ?: "不比"} MB"
+            }
+        setStatus(text)
+    }
+
     private fun captioned(caption: String, component: JComponent): JComponent {
         val pane = JPanel(BorderLayout())
         val label = JBLabel(caption)
@@ -549,7 +579,7 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
                 "源文件" to sourcePath,
                 "产物" to exeName,
                 "编辑器" to (savedName?.let { "已保存 $it" } ?: "无需保存"),
-                "时限" to "$timeMs ms",
+                "时限" to "$timeMs ms（不含编译）",
             )
             rows.add(
                 "内存上限" to when {
@@ -561,28 +591,50 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
             return listOf(DetailSection("正在跑", rows, null))
         }
 
+        /** 中间栏还没轮到输出时说的那一句（留白看起来像面板坏了）。 */
+        @JvmStatic
+        fun pendingOutputSections(): List<DetailSection> =
+            listOf(DetailSection(null, emptyList(), "（还没运行到这一步：正在编译或正在起进程）"))
+
+        /** 中间那一栏：**只有 stdout**。空输出也写清楚，不给空白。 */
+        @JvmStatic
+        fun outputSections(report: SelfTestService.Report): List<DetailSection> {
+            val run = report.run ?: return emptyList()
+            return listOf(DetailSection("stdout", emptyList(), SelfTestService.stdoutBlock(run)))
+        }
+
         /**
-         * 一次自测的详情：概览（键值行）· 编译诊断 · stdout · stderr。
+         * 右边那一栏：概览（键值行）· 编译诊断 · stderr。
          *
-         * 空节不出现（不留一块写着「无」的空壳）；stdout 为空要说「（程序没有输出）」，
-         * 留白看起来像面板坏了。内存那一行**只在量得到的时候出现**。
+         * 「时限不含编译」写在概览里：他设的是**程序跑一组的时间**，编译另有
+         * [CompilerService.COMPILE_TIMEOUT_MS] 的上限，两者各占一行，省得看到「等了好几秒」
+         * 以为 1000 ms 被算上了编译。空节不出现；内存量不到时那行要写「不生效」。
          */
         @JvmStatic
         @JvmOverloads
-        fun sections(report: SelfTestService.Report, memoryLimitMb: Int? = null): List<DetailSection> {
+        fun sideSections(
+            report: SelfTestService.Report,
+            memoryLimitMb: Int? = null,
+            timeMs: Int = SelfTestService.DEFAULT_TIMEOUT_MS,
+        ): List<DetailSection> {
             val sections = mutableListOf<DetailSection>()
             val compile = report.compile
             val run = report.run
 
-            val overview = mutableListOf("题目" to report.pid, "产物" to report.exePath)
+            val overview = mutableListOf(
+                "题目" to report.pid,
+                "产物" to report.exePath,
+                "时限（不含编译）" to "$timeMs ms",
+            )
             report.startError?.let { overview.add("没能开始" to it) }
             compile?.let {
-                overview.add("编译" to (if (it.ok) "通过 · ${it.elapsedMs} ms" else "失败 · 退出码 ${it.exitCode ?: "?"}"))
+                overview.add(
+                    "编译" to (if (it.ok) "通过 · ${it.elapsedMs} ms" else "失败 · 退出码 ${it.exitCode ?: "?"} · ${it.elapsedMs} ms"),
+                )
             }
             run?.let {
-                overview.add("结果" to SelfTestService.summaryText(it, SelfTestService.DEFAULT_TIMEOUT_MS, memoryLimitMb))
-                overview.add("用时" to "${it.elapsedMs} ms")
-                // 设了内存上限却量不到峰值：必须写出来，不能让他以为这一栏生效了
+                overview.add("结果" to SelfTestService.summaryText(it, timeMs, memoryLimitMb))
+                overview.add("运行用时" to "${it.elapsedMs} ms")
                 if (memoryLimitMb != null && it.peakMemoryBytes == null) {
                     overview.add("内存上限" to LimitFields.unenforcedText(memoryLimitMb))
                 }
@@ -595,7 +647,6 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
                 sections.add(DetailSection("编译诊断", emptyList(), it.diagnostic))
             }
             run?.let {
-                sections.add(DetailSection("stdout", emptyList(), SelfTestService.stdoutBlock(it)))
                 SelfTestService.stderrBlock(it)?.let { text ->
                     sections.add(DetailSection("stderr", emptyList(), text))
                 }

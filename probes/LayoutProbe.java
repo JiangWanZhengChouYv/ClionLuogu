@@ -215,6 +215,9 @@ class SelfTestPanelSections {
         ProcessRunner.Outcome run = new ProcessRunner.Outcome(
             "6\n", "warn: something\n", 0, 12L, false, false, false, null, 44564480L, "warn: something\n");
         SelfTestService.Report report = new SelfTestService.Report("P1001", "/tmp/build/P1001", compile, run, null);
-        return SelfTestPanel.sections(report, 128);
+        java.util.List<DetailSection> both = new java.util.ArrayList<>();
+        both.addAll(SelfTestPanel.sideSections(report, 128, 1000));
+        both.addAll(SelfTestPanel.outputSections(report));
+        return both;
     }
 }

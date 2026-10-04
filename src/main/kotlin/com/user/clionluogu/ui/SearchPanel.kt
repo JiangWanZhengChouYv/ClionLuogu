@@ -74,6 +74,7 @@ class SearchPanel(
         add(JBScrollPane(resultList), BorderLayout.CENTER)
 
         searchButton.addActionListener { doSearch() }
+        keywordField.addActionListener { doSearch() }
         fetchSelectedButton.addActionListener { fetchSelected() }
         solutionsButton.addActionListener { showSolutions() }
 
