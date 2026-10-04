@@ -96,9 +96,13 @@ class SearchPanel(
      * 比原来把整段塞进 `JBLabel`（结果被压成一行、还撑破宽度）诚实。
      */
     private fun setStatus(text: String, error: Boolean = false) {
-        statusLabel.text = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
-        statusLabel.toolTipText = text.takeIf { it.contains('\n') }
-        statusLabel.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
+        // 短句进状态行，整段留 tooltip（多行说明在窄栏里根本放不下）
+        StatusRow.apply(
+            statusLabel,
+            StatusRow.firstLine(text),
+            error,
+            tooltip = text.takeIf { it.contains('\n') },
+        )
     }
 
     private fun doSearch() {

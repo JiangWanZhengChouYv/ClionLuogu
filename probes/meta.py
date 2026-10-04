@@ -102,8 +102,23 @@ check("release.sh 功能一览有自测", "自测" in rel)
 check("release.sh 不说 8 个页签", "8 个页签" not in rel, "")
 check("release.sh 页签数与新布局一致", "左侧 6" in rel or "6 页签" in rel or "底部" in rel, "")
 
+# 第二轮排版的两条钉子：头部不许回到「一件一行」，被自动重看取代的按钮不许复活
+compare = read("src/main/kotlin/com/user/clionluogu/ui/SampleComparePanel.kt")
+check("对拍页头部不再一件一行（addNorth 应当已经没了）", "addNorth(" not in compare, "")
+check("对拍页不再挂「重新查找样例」按钮", "重新查找样例\")" not in compare or "reprobeButton" not in compare, "")
+submit = read("src/main/kotlin/com/user/clionluogu/ui/SubmitPanel.kt")
+check("提交页不再挂「刷新预览」按钮", 'JButton("刷新预览")' not in submit, "")
+status_row = read("src/main/kotlin/com/user/clionluogu/ui/StatusRow.kt")
+check("状态行着色收成一处", "getErrorForeground" in status_row, "")
+for panel in ["FetchPanel.kt", "SearchPanel.kt", "LoginPanel.kt", "SubmitPanel.kt", "SelfTestPanel.kt"]:
+    body = read("src/main/kotlin/com/user/clionluogu/ui/" + panel)
+    check(f"{panel} 用共用的状态行规则", "StatusRow." in body, "")
+runf = read("src/main/kotlin/com/user/clionluogu/ui/LuoguRunToolWindowFactory.kt")
+check("底部三页各有图标", runf.count("AllIcons.Actions.") >= 3, str(runf.count("AllIcons.Actions.")))
+
 report = read("Report.md")
 check("Report 有 1.8.0 一节", "## 37" in report and "1.8.0" in report)
+check("Report 有第二轮排版一节", "## 39" in report)
 
 print(f"=== 元数据探针：{PASS} 通过 / {len(FAIL)} 失败 ===")
 for f in FAIL:

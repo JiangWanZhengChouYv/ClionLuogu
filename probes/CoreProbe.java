@@ -16,6 +16,7 @@ import com.user.clionluogu.ui.DetailPanel;
 import com.user.clionluogu.ui.DetailSection;
 import com.user.clionluogu.ui.SampleComparePanel;
 import com.user.clionluogu.ui.SelfTestPanel;
+import com.user.clionluogu.ui.StatusRow;
 import com.user.clionluogu.ui.SubmitPanel;
 
 import java.io.File;
@@ -105,6 +106,7 @@ public class CoreProbe {
         limitsParsing();
         signatureStability();
         meterParsing();
+        statusRowRule();
 
         System.out.println("=== 探针合计：" + pass + " 通过 / " + fail + " 失败 ===");
         Runtime.getRuntime().halt(fail == 0 ? 0 : 1);
@@ -502,5 +504,32 @@ public class CoreProbe {
         check("量不到就不写「峰值内存」那一行", SelfTestService.peakMemoryText(noPeak) == null, "写了");
         check("量到了就写 MB", SelfTestService.peakMemoryText(withPeak).equals("200 MB"),
             String.valueOf(SelfTestService.peakMemoryText(withPeak)));
+    }
+
+    // ---- 状态行那一处规则（原来五个面板各写一遍，早晚有一处不染色） ----
+
+    static void statusRowRule() {
+        javax.swing.JLabel label = new javax.swing.JLabel();
+        StatusRow.apply(label, "已提交到 P1001，记录 id=123", false);
+        check("正常句用默认色（不是错误色）", !StatusRow.isErrorColor(label), String.valueOf(label.getForeground()));
+        check("正常句不留残留 tooltip", label.getToolTipText() == null, String.valueOf(label.getToolTipText()));
+        StatusRow.apply(label, "找不到 P1001.cpp", true);
+        check("出错染成错误色", StatusRow.isErrorColor(label), String.valueOf(label.getForeground()));
+        check("出错时整句进 tooltip（状态行只放得下一行）", "找不到 P1001.cpp".equals(label.getToolTipText()),
+            String.valueOf(label.getToolTipText()));
+        StatusRow.apply(label, "编译器：clang++", false);
+        check("从错误回到正常要把颜色复原", !StatusRow.isErrorColor(label), "还是错误色");
+        StatusRow.apply(label, "结果", false, "整段说明");
+        check("显式传的 tooltip 原样用", "整段说明".equals(label.getToolTipText()), String.valueOf(label.getToolTipText()));
+        check("firstLine 取第一条非空行", "第二行".equals(StatusRow.firstLine("\n  \n第二行\n第三行")),
+            StatusRow.firstLine("\n  \n第二行\n第三行"));
+        check("全空白给一个空格而不是空串（空串会让标签高度塌下去）", " ".equals(StatusRow.firstLine("   \n  ")),
+            "[" + StatusRow.firstLine("   \n  ") + "]");
+        javax.swing.JLabel warn = new javax.swing.JLabel();
+        StatusRow.warn(warn, "设置里的编译器不可用，已回落");
+        check("警告句也进 tooltip", "设置里的编译器不可用，已回落".equals(warn.getToolTipText()),
+            String.valueOf(warn.getToolTipText()));
+        StatusRow.clear(warn);
+        check("clear 抹掉残留 tooltip", warn.getToolTipText() == null, String.valueOf(warn.getToolTipText()));
     }
 }

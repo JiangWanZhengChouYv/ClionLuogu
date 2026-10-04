@@ -82,7 +82,6 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     private val pidField = JBTextField()
     private val timeField = JBTextField()
     private val memoryField = JBTextField()
-    private val reprobeButton = JButton("重新查找样例")
     private val pickCompilerButton = JButton("换编译器…")
     private val compilerLabel = JBLabel(" ")
     private val warnLabel = JBLabel(" ")
@@ -137,32 +136,22 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
     }
 
     init {
-        // 侧边栏很窄：每行只放一个组件、整行铺满；必须并排的按钮用 WrapLayout
-        // （FlowLayout 的 preferredSize 只算单行高度，折出去的第二行会被整块裁掉）
-        val buttonRow = JPanel(WrapLayout(FlowLayout.LEFT, 6, 4))
-        buttonRow.add(reprobeButton)
-        buttonRow.add(pickCompilerButton)
-
-        val north = JPanel(GridBagLayout())
-        north.border = JBUI.Borders.empty(8)
-        var row = -1
-        fun addNorth(component: JComponent) {
-            row++
-            val gbc = GridBagConstraints().apply {
-                gridx = 0
-                gridy = row
-                weightx = 1.0
-                fill = GridBagConstraints.HORIZONTAL
-                insets = JBUI.insets(2)
-            }
-            north.add(component, gbc)
+        pidField.emptyText.appendText("空 = 跟当前文件")
+        // 底部窗口矮，头部绝不能一行一件：题号、时空上限、编译器、两个按钮全排一行。
+        // 用 WrapLayout 而不是 FlowLayout —— 后者算 preferredSize 只算单行高度，
+        // 窗口被拖窄时折出去的第二行会被整块裁掉（1.7.1/1.7.2 真踩过两次）。
+        val north = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2)).apply {
+            border = JBUI.Borders.empty(4, 8, 0, 8)
         }
-        addNorth(JBLabel("题号（空=跟当前文件）"))
-        addNorth(pidField)
-        addNorth(limitsRow())
-        addNorth(buttonRow)
-        addNorth(compilerLabel)
-        addNorth(warnLabel)
+        JBLabel("题号").let { north.add(it) }
+        north.add(pidField)
+        north.add(JBLabel("时限"))
+        north.add(timeField)
+        north.add(JBLabel("内存"))
+        north.add(memoryField)
+        north.add(compilerLabel)
+        north.add(warnLabel)
+        north.add(pickCompilerButton)
         add(north, BorderLayout.NORTH)
 
         resultList.selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -218,7 +207,6 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         jumpButton.isEnabled = false
         jumpButton.toolTipText = "打开项目根的 Pxxx.cpp 并定位到诊断里的第一条错误；本地文件不在或行号超出代码长度时不出现"
         // 图标只用来让动作一眼可辨；主 CTA（编译并对拍）保持纯文字按钮
-        reprobeButton.icon = AllIcons.General.Refresh
         pickCompilerButton.icon = AllIcons.General.Settings
         stopButton.icon = AllIcons.Actions.Cancel
         exportButton.icon = AllIcons.General.Add
@@ -232,23 +220,13 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
         actionRow.add(jumpButton)
         actionRow.add(fetchButton)
 
-        val bottom = JPanel(GridBagLayout())
-        bottom.border = JBUI.Borders.empty(4, 8)
-        listOf<JComponent>(actionRow, statusLabel).forEachIndexed { i, comp ->
-            bottom.add(
-                comp,
-                GridBagConstraints().apply {
-                    gridx = 0
-                    gridy = i
-                    weightx = 1.0
-                    fill = GridBagConstraints.HORIZONTAL
-                    insets = JBUI.insets(2)
-                },
-            )
-        }
+        // 按钮与状态行同一条 WrapLayout：矮窗口里每一行都是钱
+        actionRow.add(statusLabel)
+        val bottom = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
+        bottom.border = JBUI.Borders.empty(2, 8, 4, 8)
+        bottom.add(actionRow)
         add(bottom, BorderLayout.SOUTH)
 
-        reprobeButton.addActionListener { probe() }
         pidField.addActionListener { probeIfStale() }
         // 输完题号点个地方就开始分析。但**点列表也会让输入框失焦**，
         // 所以只在题号真的变了时才重探，否则一轮结果会被这次探测清光。
@@ -588,16 +566,17 @@ class SampleComparePanel(private val project: Project) : JPanel(BorderLayout()) 
             compilerLabel.foreground = UIUtil.getLabelForeground()
             compilerLabel.toolTipText = null
             compilerLabel.text = "编译器：未找到"
-            warnLabel.text = t.compilerNotice ?: "点「换编译器…」指定一个 clang++/g++"
-            warnLabel.foreground = Color(0xE0, 0x80, 0x00)
+            StatusRow.warn(
+                warnLabel,
+                t.compilerNotice ?: "点「换编译器…」指定一个 clang++/g++",
+            )
             return
         }
         compilerLabel.text = "编译器：${compiler.display()}"
         compilerLabel.foreground = UIUtil.getLabelForeground()
         compilerLabel.toolTipText = "${compiler.file.absolutePath}\n${compiler.versionLine.orEmpty()}"
         val notice = t.compilerNotice
-        warnLabel.text = notice.orEmpty()
-        warnLabel.foreground = if (notice == null) UIUtil.getLabelForeground() else Color(0xE0, 0x80, 0x00)
+        if (notice == null) StatusRow.clear(warnLabel) else StatusRow.warn(warnLabel, notice)
     }
 
     // ---- 换编译器 ----

@@ -16,8 +16,6 @@ import com.user.clionluogu.api.LuoguPidValidator
 import com.user.clionluogu.service.LuoguActions
 import java.awt.BorderLayout
 import java.awt.FlowLayout
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
 import java.awt.Point
 import java.io.File
 import javax.swing.DefaultComboBoxModel
@@ -43,7 +41,6 @@ class SubmitPanel(
     private val langCombo = ComboBox<String>()
     private val previewArea = JBTextArea()
     private val previewScroll = JBScrollPane(previewArea)
-    private val refreshButton = JButton("刷新预览")
     private val submitButton = JButton("提交")
     private val statusLabel = JBLabel(" ")
 
@@ -75,24 +72,15 @@ class SubmitPanel(
         previewArea.font = DetailPanel.monoFont()
         previewArea.emptyText.appendText("这里显示将要提交的代码（按题号找：编辑器里那份优先，其次项目根那份）")
 
-        val form = JPanel(GridBagLayout())
-        form.border = JBUI.Borders.empty(8)
-        val gbc = GridBagConstraints().apply {
-            gridx = 0
-            gridy = 0
-            weightx = 1.0
-            fill = GridBagConstraints.HORIZONTAL
-            insets = JBUI.insets(4)
-        }
-        form.add(JBLabel("题号"), gbc)
-        gbc.gridy++
-        form.add(pidField, gbc)
-        gbc.gridy++
-        form.add(JBLabel("语言版本"), gbc)
-        gbc.gridy++
-        form.add(langCombo, gbc)
-        gbc.gridy++
-        form.add(refreshButton, gbc)
+        // 提交页搬到底部窗口之后，纵向高度是稀缺资源：题号与语言并成一行，
+        // 预览区吃满剩下的全部高度。「刷新预览」这个按钮删了 —— 每秒自动重看已经取代它，
+        // 留着只是白占一行还多一个可能点错的东西（要立刻看就回车或点一下别处）。
+        val form = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
+        form.border = JBUI.Borders.empty(4, 8, 0, 8)
+        form.add(JBLabel("题号"))
+        form.add(pidField)
+        form.add(JBLabel("语言版本"))
+        form.add(langCombo)
 
         // 不用 BorderLayout 的 WEST + CENTER：窄侧边栏下状态文字会把提交按钮挤出去
         val bottom = JPanel(WrapLayout(FlowLayout.LEFT, 6, 2))
@@ -103,8 +91,6 @@ class SubmitPanel(
         add(form, BorderLayout.NORTH)
         add(previewScroll, BorderLayout.CENTER)
         add(bottom, BorderLayout.SOUTH)
-
-        refreshButton.addActionListener { refreshPreview(force = true) }
         submitButton.addActionListener { doSubmit() }
         // 改完题号立刻重看，不用等下一个 tick
         pidField.addActionListener { refreshPreview(force = true) }
@@ -209,12 +195,8 @@ class SubmitPanel(
         CodeOrigin.MISSING -> null
     }
 
-    /** 出错的话染成错误色——原来成功与失败长一个样，得读完才知道是报错。 */
-    private fun setStatus(text: String, error: Boolean = false) {
-        statusLabel.text = text
-        statusLabel.toolTipText = text.takeIf { error }
-        statusLabel.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
-    }
+    /** 出错染成错误色 —— 规则在 [StatusRow]，五个面板共用一份。 */
+    private fun setStatus(text: String, error: Boolean = false) = StatusRow.apply(statusLabel, text, error)
 
     /**
      * 重看一次。[force] = false（定时器那条路）时签名没变就直接返回，

@@ -1,10 +1,12 @@
 package com.user.clionluogu.ui
 
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
 import com.user.clionluogu.service.SubmissionTracker
+import javax.swing.Icon
 import javax.swing.JComponent
 
 /**
@@ -20,20 +22,24 @@ class LuoguRunToolWindowFactory : ToolWindowFactory {
         val contentFactory = ContentFactory.getInstance()
         val contentManager = toolWindow.contentManager
 
-        fun add(component: JComponent, name: String) {
+        // 三个页签各有各的图标：一眼分得清「跑一下看看」「逐组比对」「交上去」，
+        // 不用把鼠标挪过去读字。图标都是 AllIcons 里 javap 核过的现成字段。
+        fun add(component: JComponent, name: String, icon: Icon) {
             val content = contentFactory.createContent(component, name, false)
             content.setPreferredFocusableComponent(component)
+            content.icon = icon
             contentManager.addContent(content)
         }
 
-        add(SelfTestPanel(project), LuoguTabs.TAB_SELFTEST)
-        add(SampleComparePanel(project), LuoguTabs.TAB_COMPARE)
+        add(SelfTestPanel(project), LuoguTabs.TAB_SELFTEST, AllIcons.Actions.Execute)
+        add(SampleComparePanel(project), LuoguTabs.TAB_COMPARE, AllIcons.Actions.RunAll)
         add(
             SubmitPanel(project) { pid, rid, lang, code ->
                 // 记账走 tracker：左侧的评测页可能压根没被打开过，记录不能因此不落盘、不轮询
                 SubmissionTracker.track(project, pid, rid, lang, code)
             },
             LuoguTabs.TAB_SUBMIT,
+            AllIcons.Actions.Upload,
         )
     }
 }

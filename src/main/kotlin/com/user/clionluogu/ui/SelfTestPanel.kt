@@ -486,11 +486,7 @@ class SelfTestPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private fun guessedPid(): String? = CurrentFilePid.guess(project)
 
-    private fun setStatus(text: String, error: Boolean = false) {
-        statusLabel.text = text
-        statusLabel.toolTipText = text.takeIf { error }
-        statusLabel.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
-    }
+    private fun setStatus(text: String, error: Boolean = false) = StatusRow.apply(statusLabel, text, error)
 
     /** 半边一个细条说明，代替 TitledBorder（他说过底部臃肿：边框 + 标题行吃掉两行高）。 */
     private fun captioned(caption: String, component: JComponent): JComponent {

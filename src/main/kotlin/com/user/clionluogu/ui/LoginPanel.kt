@@ -225,8 +225,7 @@ class LoginPanel(private val project: Project) : JPanel() {
                 if (gen != generation) return@invokeLater // 已被后续操作取代，丢弃本次收尾
                 clearAccount()
                 cardLayout.show(this, CARD_LOGIN)
-                loginStatusLabel.text = errorText ?: "已退出登录，Cookie 已清除"
-                if (errorText != null) loginStatusLabel.foreground = UIUtil.getErrorForeground()
+                status(loginStatusLabel, errorText ?: "已退出登录，Cookie 已清除", error = errorText != null)
                 notifyLoginState(false)
             }
         }
@@ -374,10 +373,7 @@ class LoginPanel(private val project: Project) : JPanel() {
     }
 
     /** 状态标签原来成功与失败长一个样；出错至少染成错误色。 */
-    private fun status(label: JBLabel, text: String, error: Boolean = false) {
-        label.text = text
-        label.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
-    }
+    private fun status(label: JBLabel, text: String, error: Boolean = false) = StatusRow.apply(label, text, error)
 
     private companion object {
         /** 两个 Cookie 怎么找：以前摊在标签里（窄侧边栏会被裁），现在放 tooltip。 */

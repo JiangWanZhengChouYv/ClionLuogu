@@ -51,10 +51,7 @@ class FetchPanel(
     }
 
     /** 结果区的一句话开关：出错时染成错误色，别和成功信息长一个样。 */
-    private fun show(text: String, error: Boolean = false) {
-        resultArea.foreground = if (error) UIUtil.getErrorForeground() else UIUtil.getLabelForeground()
-        resultArea.text = text
-    }
+    private fun show(text: String, error: Boolean = false) = StatusRow.apply(resultArea, text, error)
 
     private fun doFetch() {
         val pid = pidField.text.trim()

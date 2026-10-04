@@ -66,10 +66,16 @@ fi
 SUITES=("${@:-all}")
 [ "${SUITES[0]}" = "all" ] && SUITES=(core process layout meta)
 
+javac_failed=0
 for f in CoreProbe ProcessProbe LayoutProbe; do
   [ -f "$PROBE_DIR/$f.java" ] || continue
-  "$PROBE_JDK/bin/javac" -nowarn -cp "$CP" -d "$OUT" "$PROBE_DIR/$f.java" 2>&1 | head -10
+  if ! "$PROBE_JDK/bin/javac" -nowarn -cp "$CP" -d "$OUT" "$PROBE_DIR/$f.java" 2>"$OUT/$f.javac.log"; then
+    echo "!! $f.java 编译失败（接下来跑的是上一次留下的 class，别把这份结果当数）："
+    head -12 "$OUT/$f.javac.log"
+    javac_failed=1
+  fi
 done
+[ "$javac_failed" = 1 ] && exit 1
 
 total_pass=0
 total_fail=0
